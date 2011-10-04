@@ -799,13 +799,15 @@ bool CTxMemPool::accept(CValidationState &state, const CTransaction &tx, bool fL
     if (tx.IsCoinBase())
         return state.DoS(100, error("CTxMemPool::accept() : coinbase as individual tx"));
 
+    unsigned int nSize = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
+
     // To help v0.1.5 clients who would see it as a negative number
-    if ((int64)tx.nLockTime > std::numeric_limits<int>::max())
+    if ((int64)tx.nLockTime > std::numeric_limits<int>::max() && !GetBoolArg("-acceptnonstdtxn", false))
         return error("CTxMemPool::accept() : not accepting nLockTime beyond 2038 yet");
 
     // Rather not work on nonstandard transactions (unless -testnet/-regtest)
     string reason;
-    if (Params().NetworkID() == CChainParams::MAIN && !IsStandardTx(tx, reason))
+    if (Params().NetworkID() == CChainParams::MAIN && !IsStandardTx(tx, reason) && !GetBoolArg("-acceptnonstdtxn", false))
         return error("CTxMemPool::accept() : nonstandard transaction: %s",
                      reason.c_str());
 
@@ -881,8 +883,19 @@ bool CTxMemPool::accept(CValidationState &state, const CTransaction &tx, bool fL
         }
 
         // Check for non-standard pay-to-script-hash in inputs
-        if (Params().NetworkID() == CChainParams::MAIN && !AreInputsStandard(tx, view))
-            return error("CTxMemPool::accept() : nonstandard transaction input");
+        if (Params().NetworkID() == CChainParams::MAIN && !AreInputsStandard(tx, view)){
+            if (!GetBoolArg("-acceptnonstdtxn", false))
+                return error("CTxMemPool::accept() : nonstandard transaction input");
+
+            {
+                int64 nBytesPerSigOp = GetArg("-bytespersigop", 0);
+                int nSigOps = GetLegacySigOpCount(tx);
+                nSigOps += GetP2SHSigOpCount(tx, view);
+
+                if (nBytesPerSigOp && nSigOps > nSize / nBytesPerSigOp)
+                    return error("CTxMemPool::accept() : transaction with out-of-bounds SigOpCount");
+            }
+        }
 
         // Note: if you modify this code to accept non-standard transactions, then
         // you should add code here to check that the transaction does a
