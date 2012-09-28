@@ -142,11 +142,14 @@ void CCryptoKeyStore::AddPrivateKeysToRandPool()
     //
     // Maybe better to skip the XOR stuff, and just use
     // SHA256_Init,Updated,Final even if it's not absolutely ideologically
-    // pure. This is already focusing on a semi-theoretical issue...
+    // pure. After all, it's highly unlikely for SHA256 to break, because any
+    // remotely-exploitable change implies that output changes, which should be
+    // noticed *very* quickly.
     //
     //
     // Q: can secure_allocator allocate a byte array compatible with OpenSSL RAND_add?
     // Q: as above, but for SHA256?
+    // Q: is this SHA256 routine used for everything? (so breakage will be noticed)
 
     {
         LOCK(cs_KeyStore);
