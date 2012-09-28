@@ -139,7 +139,14 @@ void CCryptoKeyStore::AddPrivateKeysToRandPool()
     // If entropy isn't consecutive, we can end up XORing bits together. Nasty
     // trap, but OK for adding private keys.
     //
+    //
+    // Maybe better to skip the XOR stuff, and just use
+    // SHA256_Init,Updated,Final even if it's not absolutely ideologically
+    // pure. This is already focusing on a semi-theoretical issue...
+    //
+    //
     // Q: can secure_allocator allocate a byte array compatible with OpenSSL RAND_add?
+    // Q: as above, but for SHA256?
 
     {
         LOCK(cs_KeyStore);
