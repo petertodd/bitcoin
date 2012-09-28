@@ -1,0 +1,174 @@
+PRNG persistent seed
+
+https://bitcointalk.org/index.php?topic=113496.msg1227163#msg1227163
+
+Want to make the OpenSSL ECC calls safe, which internally use RAND_Bytes or
+something. All our GetRand* stuff isn't security critical enough to worry about
+PRNG failures.
+
+Safe to say everywhere you see AddSeed outside of initialization is where we
+should be using persistent seeds. Two uses in CWallet::EncryptWallet, the other
+use in CWallet::GenerateNewKey
+
+
+use either dedicated seed file or private keys
+
+dedicated seed file really should be as secure as your wallet, IE encrypted, so
+private keys would be easiest
+
+
+how does RAND_add work? hashing, see openssl src: /crypto/rand/md_rand.c kinda
+slow, so don't add more than we have real entropy for
+
+
+latter option:
+
+On encrypting wallet, put entropy from keys into pool.
+
+On generating keys, same.
+
+
+CPubKey CWallet::GenerateNewKey()
+{
+    bool fCompressed = CanSupportFeature(FEATURE_COMPRPUBKEY); // default to compressed public keys if we want 0.6.0 wallets
+
+    RandAddSeedPerfmon();
+    CKey key;
+
+# this happens first, before we check if the keystore is encrypted or not
+
+    key.MakeNewKey(fCompressed);
+
+    // Compressed public keys were introduced in version 0.6.0
+    if (fCompressed)
+        SetMinVersion(FEATURE_COMPRPUBKEY);
+
+# now we try to add, some possibilities...
+    if (!AddKey(key))
+        throw std::runtime_error("CWallet::GenerateNewKey() : AddKey failed");
+    return key.GetPubKey();
+}
+
+
+bool CWallet::AddKey(const CKey& key)
+{
+    if (!CCryptoKeyStore::AddKey(key))
+        return false;
+    if (!fFileBacked)
+        return true;
+    if (!IsCrypted())
+        return CWalletDB(strWalletFile).WriteKey(key.GetPubKey(), key.GetPrivKey());
+    return true;
+}
+
+Seems that the key is first added to the memory store, potentially encrypted,
+then added to the on-disk wallet.
+
+bool CCryptoKeyStore::AddKey(const CKey& key)
+{
+    {
+        LOCK(cs_KeyStore);
+        if (!IsCrypted())
+            return CBasicKeyStore::AddKey(key);
+
+        if (IsLocked())
+            return false;
+
+        std::vector<unsigned char> vchCryptedSecret;
+        CPubKey vchPubKey = key.GetPubKey();
+        bool fCompressed;
+        if (!EncryptSecret(vMasterKey, key.GetSecret(fCompressed), vchPubKey.GetHash(), vchCryptedSecret))
+            return false;
+
+        if (!AddCryptedKey(key.GetPubKey(), vchCryptedSecret))
+            return false;
+    }
+    return true;
+}
+
+
+bool CBasicKeyStore::AddKey(const CKey& key)
+{
+    bool fCompressed = false;
+    CSecret secret = key.GetSecret(fCompressed);
+    {   
+        LOCK(cs_KeyStore);
+        mapKeys[key.GetPubKey().GetID()] = make_pair(secret, fCompressed);
+    }   
+    return true;
+}
+
+
+So we have a possible problem, the keystore is protected with an ECC keypair,
+which means you can add new keys to it without having the wallet unlocked.
+
+Easy case:
+
+if (IsLocked()){
+    // add secret key data, best
+} (!IsLocked()){
+    // add the encrypted secret key data, good unless attacker has disk access
+}
+
+CWallet doesn't have access to the data itself, so we should probably add to
+CKeyStore:
+
+void CKeyStore::AddPrivateKeysToRandPool() : virtual
+
+Keys appear to always be stored in memory, no disk database lookup required.
+
+void BasicKeyStore::AddPrivateKeysToRandPool(){
+    // mapKeys is a CKeyID:(CSecret,bool) map, can iterate over all values in the map, adding secrets as we go
+}
+
+void CCryptoKeyStore::AddPrivateKeysToRandPool()
+{
+    // Only do this once
+    if (KeysAddedAlready) return;
+
+    // The following has direct openssl calls, which really should be a
+    // separate util.h EntropyGather class that initializes some *secure* memory,
+    // has an Update() method which XOR's in additional data, and a AddToPool()
+    // method which takes that XOR'd buffer and calls RAND_add()
+    //
+    // We can initialize the XOR buffer with a *fixed* number of bytes, and
+    // then loop around it. Assuming that the entropy is *consecutive* we'll
+    // add as much of it as the buffer length. Consider "____RANDOM___" ->
+    // three byte buffer -> N^M,R^D,A^O assuming the _ characters do nothing
+    //
+    // If entropy isn't consecutive, we can end up XORing bits together. Nasty
+    // trap, but OK for adding private keys.
+    //
+    // Q: can secure_allocator allocate a byte array compatible with OpenSSL RAND_add?
+
+    {
+        LOCK(cs_KeyStore);
+        if (!IsCrypted()){
+            CBasicKeyStore::AddKeyEntropyToRandPool()
+        }
+
+        // mapCryptedKeys maps CKeyId:(CPubKey,ciphertext)
+
+        // allocate buffer to xor in data
+        secure_allocator something something
+
+        // whatever needs to be done to turn this into a loop
+        CryptedKeyMap::const_iterator mi = mapCryptedKeys.find(address);
+        if (mi != mapCryptedKeys.end())
+
+            const CPubKey &vchPubKey = (*mi).second.first;
+            const std::vector<unsigned char> &vchCryptedSecret = (*mi).second.second;
+            CSecret vchSecret;
+
+            // Attempt to decrypt the secret
+            DecryptSecret(vMasterKey, vchCryptedSecret, vchPubKey.GetHash(), vchSecret);
+
+            // Regardless if the attempt works or not, xor in both the
+            // CryptedSecret and decrypted secret
+
+        }
+        // Add the resulting XOR stuff in one go, assuming that we added entropy
+        // equivalent to one unguessable key length.
+        RAND_add(&vchCryptedSecret.cstr,length,entropy=32)
+    }
+}
