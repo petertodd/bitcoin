@@ -223,7 +223,7 @@ def main():
 
     parser = optparse.OptionParser(usage="%prog [options]")
     parser.add_option("--from", dest="fromaddresses", default=None,
-                      help="addresses to get bitcoins from")
+                      help="addresses to get bitcoins from, comma separated")
     parser.add_option("--to", dest="to", default=None,
                       help="address to get send bitcoins to")
     parser.add_option("--amount", dest="amount", default=None,
@@ -236,7 +236,7 @@ def main():
                       help="location of bitcoin.conf file with RPC username/password (default: %default)")
     parser.add_option("--testnet", dest="testnet", default=False, action="store_true",
                       help="Use the test network")
-    parser.add_option("--dry_run", dest="dry_run", default=False, action="store_true",
+    parser.add_option("--dry-run", dest="dry_run", default=False, action="store_true",
                       help="Don't broadcast the transaction, just create and print the transaction data")
 
     (options, args) = parser.parse_args()
