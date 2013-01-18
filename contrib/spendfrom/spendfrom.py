@@ -18,9 +18,11 @@ import math
 import os
 import os.path
 import platform
+import random
 import sys
 import time
 from jsonrpc import ServiceProxy, json
+from collections import OrderedDict
 
 BASE_FEE=Decimal("0.001")
 
@@ -132,7 +134,7 @@ def select_coins(needed, inputs):
         n += 1
     return (outputs, have-needed)
 
-def create_tx(bitcoind, fromaddresses, toaddress, amount, fee):
+def create_tx(bitcoind, fromaddresses, toaddress, amount, fee, use_new_change_addr):
     all_coins = list_available(bitcoind)
 
     total_available = Decimal("0.0")
@@ -158,10 +160,17 @@ def create_tx(bitcoind, fromaddresses, toaddress, amount, fee):
     (inputs, change_amount) = select_coins(needed, potential_inputs)
     if change_amount > BASE_FEE:  # don't bother with zero or tiny change
         change_address = fromaddresses[-1]
+        if use_new_change_addr:
+            change_address = bitcoind.getnewaddress()
         if change_address in outputs:
             outputs[change_address] += float(change_amount)
         else:
             outputs[change_address] = float(change_amount)
+
+    # Randomize output order
+    outputs = list(outputs.items())
+    random.shuffle(outputs)
+    outputs = OrderedDict(outputs)
 
     rawtx = bitcoind.createrawtransaction(inputs, outputs)
     signed_rawtx = bitcoind.signrawtransaction(rawtx)
@@ -221,6 +230,8 @@ def main():
                       help="amount to send")
     parser.add_option("--fee", dest="fee", default="0.0",
                       help="fee to include")
+    parser.add_option("--change", action="store_true", dest="change", default=False,
+                      help="use a new address for change")
     parser.add_option("--datadir", dest="datadir", default=determine_db_dir(),
                       help="location of bitcoin.conf file with RPC username/password (default: %default)")
     parser.add_option("--testnet", dest="testnet", default=False, action="store_true",
@@ -247,7 +258,7 @@ def main():
         fee = Decimal(options.fee)
         amount = Decimal(options.amount)
         unlock_wallet(bitcoind)
-        txdata = create_tx(bitcoind, options.fromaddresses.split(","), options.to, amount, fee)
+        txdata = create_tx(bitcoind, options.fromaddresses.split(","), options.to, amount, fee, options.change)
         sanity_test_fee(bitcoind, txdata, amount*Decimal("0.01"))
         if options.dry_run:
             print(txdata)
