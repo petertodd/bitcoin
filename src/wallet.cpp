@@ -1164,6 +1164,44 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64> >& vecSend,
 
     wtxNew.BindWallet(this);
 
+    // Only allow this transaction to be mined by the next block, rather than a
+    // block orphaning the current best block. There are two reasons to do
+    // this, the first is the minor benefit that using nLockTime ensures
+    // related bugs get caught immediately, so protocols that need that feature
+    // don't become "unusual" transactions with flaky behavior.
+    //
+    // The more important reason is to discourage "fee sniping" by deliberately
+    // mining blocks that orphan the current best block. Basically for a large
+    // miner the value of the transactions in the best block and the mempool
+    // can exceed the cost of deliberately attempting to mine two blocks to
+    // orphan the best block. However with nLockTime you'll soon run out of
+    // transactions you can put in the first block, which means they now need
+    // to go in the second. With limited block sizes you're run out of room,
+    // and additionally another miner now only needs to orphan one block to
+    // in-turn snipe the high-fee transactions you had to place in the second
+    // block, wrecking all your hard work.
+    //
+    // Of course, the subsidy is high enough, and transaction volume low
+    // enough, that fee sniping isn't a problem yet, but by implementing a fix
+    // now we ensure code won't be written that makes assumptions about
+    // nLockTime that preclude a fix later. Transaction propagation is not
+    // impacted; even with non-final is non-standard the best block height
+    // implies we have at least one peer, and very soon more peers, that will
+    // accept and rebroadcast the transaction immediately.
+    //
+    // It is possible (if very unlikely) for a re-org near a retarget to result
+    // in nBestHeight decreasing, however transactions already accepted to a
+    // node's mempool will not be evicted by the non-final is non-standard rule
+    // and thus will confirm once more blocks are mined.
+    //
+    // However, CreateNewBlock() in <=0.8.0 has an off-by-one error and won't
+    // mine transactions until one block *after* their nLockTime expires, so
+    // for now we take that into account. This doesn't really offer any
+    // protection, but it does at least serve to shake out bugs for when the
+    // network is upgraded and the -1 can be removed so the protection actually
+    // works.
+    wtxNew.nLockTime = nBestHeight-1;
+
     {
         LOCK2(cs_main, cs_wallet);
         {
@@ -1255,8 +1293,12 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64> >& vecSend,
                     reservekey.ReturnKey();
 
                 // Fill vin
+                //
+                // Note how the sequence number is set to max()-1 so the
+                // nLockTime set above actually works.
                 BOOST_FOREACH(const PAIRTYPE(const CWalletTx*,unsigned int)& coin, setCoins)
-                    wtxNew.vin.push_back(CTxIn(coin.first->GetHash(),coin.second));
+                    wtxNew.vin.push_back(CTxIn(coin.first->GetHash(),coin.second,CScript(),
+                                std::numeric_limits<unsigned int>::max()-1));
 
                 // Sign
                 int nIn = 0;
