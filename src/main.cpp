@@ -388,7 +388,16 @@ bool CTransaction::IsStandard() const
         assert(txout.nValue >= 0);
 
         if (txout.nValue == 0)
-            return false;
+            return error("CTransaction::IsStandard : ignoring transaction with 0 value output");
+
+        // If the output value is less than the tx fee required to spend it,
+        // there is no economic incentive to do so, thus encouraging UTXO set
+        // bloat. Note that because the marginal bytes required to spend a txin
+        // are always less than 1KB, see scriptSig size above, and MIN_TX_FEE
+        // is in terms of BTC per 1KB, spending IsStandard() outputs will
+        // always result in a net positive return.
+        if (txout.nValue <= MIN_TX_FEE)
+            return error("CTransaction::IsStandard : ignoring transaction with output value <= MIN_TX_FEE");
     }
     return true;
 }
