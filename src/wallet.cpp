@@ -1318,6 +1318,13 @@ string CWallet::SendMoney(CScript scriptPubKey, int64 nValue, CWalletTx& wtxNew,
     CReserveKey reservekey(this);
     int64 nFeeRequired;
 
+    if (nValue <= MIN_TX_FEE){
+        string strError;
+        strError = strprintf(_("Error: Output value is too small; amount must be greater than %s"), FormatMoney(MIN_TX_FEE).c_str());
+        printf("SendMoney() : %s", strError.c_str());
+        return strError;
+    }
+
     if (IsLocked())
     {
         string strError = _("Error: Wallet locked, unable to create transaction!");
