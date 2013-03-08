@@ -384,6 +384,9 @@ bool CTransaction::IsStandard() const
     BOOST_FOREACH(const CTxOut& txout, vout) {
         if (!::IsStandard(txout.scriptPubKey))
             return false;
+
+        assert(txout.nValue >= 0);
+
         if (txout.nValue == 0)
             return false;
     }
