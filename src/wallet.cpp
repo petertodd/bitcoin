@@ -1189,7 +1189,9 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64> >& vecSend, CW
                     nFeeRet += nMoveToFee;
                 }
 
-                if (nChange > 0)
+                // Create change if required, but do not create change that
+                // results in a output value that isn't economical to spend.
+                if (nChange > MIN_TX_FEE)
                 {
                     // Note: We use a new key here to keep it from being obvious which side is the change.
                     //  The drawback is that by not reusing a previous key, the change may be lost if a
