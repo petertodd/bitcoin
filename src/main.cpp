@@ -652,7 +652,7 @@ void CTxMemPool::pruneSpent(const uint256 &hashTx, CCoins &coins)
 }
 
 bool CTxMemPool::accept(CValidationState &state, CTransaction &tx, bool fLimitFree,
-                        bool* pfMissingInputs)
+                        bool* pfMissingInputs, bool fCleanup)
 {
     if (pfMissingInputs)
         *pfMissingInputs = false;
@@ -676,35 +676,18 @@ bool CTxMemPool::accept(CValidationState &state, CTransaction &tx, bool fLimitFr
     uint256 hash = tx.GetHash();
     {
         LOCK(cs);
-        if (mapTx.count(hash))
+        if (mapTxPriority.count(hash))
             return false;
     }
 
     // Check for conflicts with in-memory transactions
-    CTransaction* ptxOld = NULL;
     for (unsigned int i = 0; i < tx.vin.size(); i++)
     {
         COutPoint outpoint = tx.vin[i].prevout;
         if (mapNextTx.count(outpoint))
         {
-            // Disable replacement feature for now
+            // No replacement feature for now
             return false;
-
-            // Allow replacing with a newer version of the same transaction
-            if (i != 0)
-                return false;
-            ptxOld = mapNextTx[outpoint].ptx;
-            if (ptxOld->IsFinal())
-                return false;
-            if (!tx.IsNewerThan(*ptxOld))
-                return false;
-            for (unsigned int i = 0; i < tx.vin.size(); i++)
-            {
-                COutPoint outpoint = tx.vin[i].prevout;
-                if (!mapNextTx.count(outpoint) || mapNextTx[outpoint].ptx != ptxOld)
-                    return false;
-            }
-            break;
         }
     }
 
@@ -712,34 +695,34 @@ bool CTxMemPool::accept(CValidationState &state, CTransaction &tx, bool fLimitFr
     CCoinsViewCache view(dummy);
 
     {
-    LOCK(cs);
-    CCoinsViewMemPool viewMemPool(*pcoinsTip, *this);
-    view.SetBackend(viewMemPool);
+        LOCK(cs);
+        CCoinsViewMemPool viewMemPool(*pcoinsTip, *this);
+        view.SetBackend(viewMemPool);
 
-    // do we already have it?
-    if (view.HaveCoins(hash))
-        return false;
-
-    // do all inputs exist?
-    // Note that this does not check for the presence of actual outputs (see the next check for that),
-    // only helps filling in pfMissingInputs (to determine missing vs spent).
-    BOOST_FOREACH(const CTxIn txin, tx.vin) {
-        if (!view.HaveCoins(txin.prevout.hash)) {
-            if (pfMissingInputs)
-                *pfMissingInputs = true;
+        // do we already have it?
+        if (view.HaveCoins(hash))
             return false;
+
+        // do all inputs exist?
+        // Note that this does not check for the presence of actual outputs (see the next check for that),
+        // only helps filling in pfMissingInputs (to determine missing vs spent).
+        BOOST_FOREACH(const CTxIn txin, tx.vin) {
+            if (!view.HaveCoins(txin.prevout.hash)) {
+                if (pfMissingInputs)
+                    *pfMissingInputs = true;
+                return false;
+            }
         }
-    }
 
-    // are the actual inputs available?
-    if (!tx.HaveInputs(view))
-        return state.Invalid(error("CTxMemPool::accept() : inputs already spent"));
+        // are the actual inputs available?
+        if (!tx.HaveInputs(view))
+            return state.Invalid(error("CTxMemPool::accept() : inputs already spent"));
 
-    // Bring the best block into scope
-    view.GetBestBlock();
+        // Bring the best block into scope
+        view.GetBestBlock();
 
-    // we have all inputs cached now, so switch back to dummy, so we don't need to keep lock on mempool
-    view.SetBackend(dummy);
+        // we have all inputs cached now, so switch back to dummy, so we don't need to keep lock on mempool
+        view.SetBackend(dummy);
     }
 
     // Check for non-standard pay-to-script-hash in inputs
@@ -749,6 +732,7 @@ bool CTxMemPool::accept(CValidationState &state, CTransaction &tx, bool fLimitFr
     // Note: if you modify this code to accept non-standard transactions, then
     // you should add code here to check that the transaction does a
     // reasonable number of ECDSA signature verifications.
+
 
     int64 nFees = tx.GetValueIn(view)-tx.GetValueOut();
     unsigned int nSize = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
@@ -793,24 +777,147 @@ bool CTxMemPool::accept(CValidationState &state, CTransaction &tx, bool fLimitFr
     // Store transaction in memory
     {
         LOCK(cs);
-        if (ptxOld)
-        {
-            printf("CTxMemPool::accept() : replacing tx %s with new version\n", ptxOld->GetHash().ToString().c_str());
-            remove(*ptxOld);
+
+        CTxPriority txPriority1 = CTxPriority(tx, nFees);
+
+        // Propagate depth from parents
+        std::set<uint256> parents;
+        BOOST_FOREACH(const CTxIn txin, tx.vin) {
+            if (mapTxPriority.count(txin.prevout.hash)) {
+                parents.insert(txin.prevout.hash);
+            }
         }
-        addUnchecked(hash, tx);
+        BOOST_FOREACH(const uint256 parent_hash, parents) {
+            if (mapTxPriority.count(parent_hash)){
+                txPriority1.nTxDepth = max((*mapTxPriority[parent_hash]).nTxDepth,
+                                           txPriority1.nTxDepth);
+            }
+        }
+
+        // Propagate priority to children. Note that in the event of a re-org
+        // it *is* possible for a tx newly added to the mempool to have
+        // children already in the mempool.
+        //
+        // FIXME: implement
+
+        // Note that when we push the txPriority structure onto the heap it
+        // will start with a priority of zero due to the fees being recorded
+        // in the "Dirty" fields rather than the final ones. This is important,
+        // because with the fibonacci heap increasing priority is O(1) - it can
+        // only go up.
+        PriorityHeapHandle ptxPriority = heapTxPriority.push(txPriority1);
+        CTxPriority &txPriority = *ptxPriority; // get the correct memory reference
+
+        listDirtyParents.push_back(hash);
+        listDirtyChildren.push_front(hash);
+
+        mapTxPriority[hash] = ptxPriority;
+
+        if (fCleanup){
+            cleanupDirtyParents();
+            cleanupDirtyChildren();
+        }
+
+        for (unsigned int i = 0; i < tx.vin.size(); i++){
+            mapNextTx[tx.vin[i].prevout] = CInPoint(&txPriority.tx, i);
+        }
+
+        nTransactionsUpdated++;
     }
 
-    ///// are we sure this is ok when loading transactions or restoring block txes
-    // If updated, erase old tx from wallet
-    if (ptxOld)
-        EraseFromWallets(ptxOld->GetHash());
     SyncWithWallets(hash, tx, NULL, true);
 
     printf("CTxMemPool::accept() : accepted %s (poolsz %"PRIszu")\n",
            hash.ToString().c_str(),
-           mapTx.size());
+           mapTxPriority.size());
     return true;
+}
+
+void CTxMemPool::cleanupDirtyParents()
+{
+    while (!listDirtyParents.empty()){
+        uint256 hash = listDirtyParents.front();
+        listDirtyParents.pop_front();
+
+        if (!mapTxPriority.count(hash))
+            continue;
+
+
+        PriorityHeapHandle ptxPriority = mapTxPriority[hash];
+        if ((*ptxPriority).nDirtyTxDepth == 0)
+            continue;
+
+        (*ptxPriority).nTxDepth += (*ptxPriority).nDirtyTxDepth;
+
+        heapTxPriority.update(ptxPriority);
+
+        std::set<uint256> children;
+        for (unsigned int i = 0; i < (*ptxPriority).tx.vout.size(); i++){
+            COutPoint outpoint(hash, i);
+            if (mapNextTx.count(outpoint)) {
+                children.insert(mapNextTx[outpoint].ptx->GetHash());
+            }
+        }
+
+        BOOST_FOREACH(uint256 child_hash, children) {
+            PriorityHeapHandle child = mapTxPriority[child_hash];
+
+            (*child).nDirtyTxDepth += (*ptxPriority).nDirtyTxDepth;
+
+            listDirtyParents.push_front(child_hash);
+        }
+
+        (*ptxPriority).nDirtyTxDepth = 0;
+    }
+}
+
+void CTxMemPool::cleanupDirtyChildren()
+{
+    while (!listDirtyChildren.empty()){
+        uint256 hash = listDirtyChildren.front();
+        listDirtyChildren.pop_front();
+
+        if (!mapTxPriority.count(hash))
+            continue;
+
+        PriorityHeapHandle ptxPriority = mapTxPriority[hash];
+
+        // FIXME: handle case where tx size and fees are negative
+        if ((*ptxPriority).priority() >= (*ptxPriority).dirtyPriority())
+            continue;
+
+        (*ptxPriority).nSumTxSize += (*ptxPriority).nDirtySumTxSize;
+        (*ptxPriority).nSumTxFees += (*ptxPriority).nDirtySumTxFees;
+
+        heapTxPriority.increase(ptxPriority);
+
+        std::set<uint256> parents;
+        BOOST_FOREACH(const CTxIn txin, (*ptxPriority).tx.vin) {
+            if (mapTxPriority.count(txin.prevout.hash)) {
+                parents.insert(txin.prevout.hash);
+            }
+        }
+
+        BOOST_FOREACH(uint256 parent_hash, parents) {
+            PriorityHeapHandle parent = mapTxPriority[parent_hash];
+
+            if ((*ptxPriority).nDirtySumTxSize && (*ptxPriority).nDirtySumTxFees &&
+                    (*ptxPriority).priority() > (*parent).priority()){
+
+                (*parent).nDirtySumTxSize += (*ptxPriority).nDirtySumTxSize;
+                (*parent).nDirtySumTxFees += (*ptxPriority).nDirtySumTxFees;
+
+                listDirtyChildren.push_front(parent_hash);
+            }
+        }
+
+        (*ptxPriority).nDirtySumTxSize = (*ptxPriority).nDirtySumTxFees = 0;
+    }
+}
+
+bool CTxMemPool::addUnchecked(const uint256& hash, CTransaction &tx)
+{
+    return false;
 }
 
 bool CTransaction::AcceptToMemoryPool(CValidationState &state, bool fLimitFree, bool* pfMissingInputs)
@@ -822,38 +929,73 @@ bool CTransaction::AcceptToMemoryPool(CValidationState &state, bool fLimitFree, 
     }
 }
 
-bool CTxMemPool::addUnchecked(const uint256& hash, CTransaction &tx)
-{
-    // Add to memory pool without checking anything.  Don't call this directly,
-    // call CTxMemPool::accept to properly check the transaction first.
-    {
-        mapTx[hash] = tx;
-        for (unsigned int i = 0; i < tx.vin.size(); i++)
-            mapNextTx[tx.vin[i].prevout] = CInPoint(&mapTx[hash], i);
-        nTransactionsUpdated++;
-    }
-    return true;
-}
-
-
 bool CTxMemPool::remove(const CTransaction &tx, bool fRecursive)
 {
     // Remove transaction from memory pool
     {
         LOCK(cs);
+
         uint256 hash = tx.GetHash();
-        if (mapTx.count(hash))
+        if (mapTxPriority.count(hash))
         {
-            if (fRecursive) {
-                for (unsigned int i = 0; i < tx.vout.size(); i++) {
-                    std::map<COutPoint, CInPoint>::iterator it = mapNextTx.find(COutPoint(hash, i));
-                    if (it != mapNextTx.end())
-                        remove(*it->second.ptx, true);
+            PriorityHeapHandle pTxPriority = mapTxPriority[hash];
+
+            // Undo depth information propagated from parent to child
+            std::set<uint256> children;
+            for (unsigned int i = 0; i < tx.vout.size(); i++){
+                COutPoint outpoint(hash, i);
+                if (mapNextTx.count(outpoint)) {
+                    children.insert(mapNextTx[outpoint].ptx->GetHash());
                 }
             }
-            BOOST_FOREACH(const CTxIn& txin, tx.vin)
+            BOOST_FOREACH(uint256 child_hash, children) {
+                PriorityHeapHandle child = mapTxPriority[child_hash];
+
+                if (fRecursive){
+                    remove((*child).tx, true);
+                } else {
+                    (*child).nDirtyTxDepth -= (*pTxPriority).nDirtyTxDepth;
+                    (*child).nDirtyTxDepth -= (*pTxPriority).nTxDepth;
+
+                    listDirtyParents.push_front(child_hash);
+                }
+            }
+
+            // Undo priority information propagated from child to parent
+            std::set<uint256> parents;
+            BOOST_FOREACH(const CTxIn txin, tx.vin) {
+                if (mapTxPriority.count(txin.prevout.hash)) {
+                    parents.insert(txin.prevout.hash);
+                }
+            }
+            BOOST_FOREACH(uint256 parent_hash, parents) {
+                PriorityHeapHandle parent = mapTxPriority[parent_hash];
+
+                // Note there is some subtlety here: priority info in children,
+                // if it's in the non-dirty records, is always propagated to
+                // parents in their dirty records, so doing the reverse of that
+                // will undo the effect.
+                (*parent).nDirtySumTxSize -= (*pTxPriority).nSumTxSize;
+                (*parent).nDirtySumTxFees -= (*pTxPriority).nSumTxFees;
+
+                listDirtyChildren.push_front(parent_hash);
+            }
+
+            BOOST_FOREACH(const CTxIn& txin, tx.vin){
+
                 mapNextTx.erase(txin.prevout);
-            mapTx.erase(hash);
+            }
+            mapTxPriority.erase(hash);
+
+            // Unfortunately boost::heap::fibonacci_heap::erase() has a bug
+            // where erasing the last element leaves a dangling pointer; see
+            // https://svn.boost.org/trac/boost/ticket/7903
+            if (heapTxPriority.size() > 1) {
+                heapTxPriority.erase(pTxPriority);
+            } else {
+                heapTxPriority.pop();
+            }
+
             nTransactionsUpdated++;
         }
     }
@@ -878,7 +1020,8 @@ bool CTxMemPool::removeConflicts(const CTransaction &tx)
 void CTxMemPool::clear()
 {
     LOCK(cs);
-    mapTx.clear();
+    heapTxPriority.clear();
+    mapTxPriority.clear();
     mapNextTx.clear();
     ++nTransactionsUpdated;
 }
@@ -888,9 +1031,10 @@ void CTxMemPool::queryHashes(std::vector<uint256>& vtxid)
     vtxid.clear();
 
     LOCK(cs);
-    vtxid.reserve(mapTx.size());
-    for (map<uint256, CTransaction>::iterator mi = mapTx.begin(); mi != mapTx.end(); ++mi)
-        vtxid.push_back((*mi).first);
+    vtxid.reserve(mapTxPriority.size());
+    boost::heap::fibonacci_heap<CTxPriority>::ordered_iterator mi;
+    for (mi = heapTxPriority.ordered_begin(); mi != heapTxPriority.ordered_end(); ++mi)
+        vtxid.push_back((*mi).tx.GetHash());
 }
 
 
@@ -4162,6 +4306,15 @@ CBlockTemplate* CreateNewBlock(CReserveKey& reservekey)
     unsigned int nBlockMinSize = GetArg("-blockminsize", 0);
     nBlockMinSize = std::min(nBlockMaxSize, nBlockMinSize);
 
+    // Fee-per-kilobyte amount considered the same as "free"
+    // Be careful setting this: if you set it to zero then
+    // a transaction spammer can cheaply fill blocks using
+    // 1-satoshi-fee transactions. It should be set above the real
+    // cost to you of processing a transaction.
+    //int64 nMinTxFee = MIN_TX_FEE;
+    //if (mapArgs.count("-mintxfee"))
+    //    ParseMoney(mapArgs["-mintxfee"], nMinTxFee);
+
     // Collect memory pool transactions into the block
     int64 nFees = 0;
     {
@@ -4169,6 +4322,7 @@ CBlockTemplate* CreateNewBlock(CReserveKey& reservekey)
         CBlockIndex* pindexPrev = pindexBest;
         CCoinsViewCache view(*pcoinsTip, true);
 
+#if 0
         // Priority order to process transactions
         list<COrphan> vOrphan; // list memory doesn't move
         map<uint256, vector<COrphan*> > mapDependers;
@@ -4245,13 +4399,13 @@ CBlockTemplate* CreateNewBlock(CReserveKey& reservekey)
             else
                 vecPriority.push_back(TxPriority(dPriority, dFeePerKb, &(*mi).second));
         }
-
+#endif
         // Collect transactions into block
         uint64 nBlockSize = 1000;
         uint64 nBlockTx = 0;
         int nBlockSigOps = 100;
         bool fSortedByFee = (nBlockPrioritySize <= 0);
-
+#if 0
         TxPriorityCompare comparer(fSortedByFee);
         std::make_heap(vecPriority.begin(), vecPriority.end(), comparer);
 
@@ -4338,6 +4492,7 @@ CBlockTemplate* CreateNewBlock(CReserveKey& reservekey)
                 }
             }
         }
+#endif
 
         nLastBlockTx = nBlockTx;
         nLastBlockSize = nBlockSize;

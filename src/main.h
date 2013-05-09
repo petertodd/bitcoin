@@ -11,6 +11,7 @@
 #include "script.h"
 
 #include <list>
+#include <boost/heap/fibonacci_heap.hpp>
 
 class CWallet;
 class CBlock;
@@ -2054,20 +2055,93 @@ public:
 
 
 
+/** Capture information about the priority of a transaction for the miner.
+ *
+ * Priority is calculated in terms of fees-per-kb of including this transaction
+ * and its dependents in a block, IE profit.
+ */
+class CTxPriority
+{
+public:
+    // The transaction itself
+    CTransaction tx;
 
+    // Sum of fees and tx size for this transaction and all dependents *with a
+    // higher priority* than this transaction..
+    int64 nSumTxFees;
+    int64 nDirtySumTxFees;
+    int nSumTxSize;
+    int nDirtySumTxSize;
 
+    // Depth in terms of unconfirmed transactions. 0 would be a confirmed
+    // transaction, 1 is an unconfirmed depending on confirmed and so on.
+    int nTxDepth;
+    int nDirtyTxDepth;
+
+    double FeesPerKB() const{
+        assert(nSumTxFees >= 0);
+        assert(nSumTxSize >= 0);
+
+        if (nSumTxSize > 0)
+            return (double)nSumTxFees / ((double)nSumTxSize/1000);
+        else
+            return 0;
+    }
+
+    double dirtyFeesPerKB() const{
+        if (nDirtySumTxSize != 0)
+            return (double)nDirtySumTxFees / ((double)nDirtySumTxSize/1000);
+        else
+            return 0;
+    }
+
+    double priority() const{
+        return FeesPerKB();
+    }
+
+    double dirtyPriority() const{
+        return dirtyFeesPerKB();
+    }
+
+    inline bool operator<(const CTxPriority& rhs) const{
+        if (nTxDepth == rhs.nTxDepth){
+            return priority() < rhs.priority();
+        } else {
+            // Note how increased depth is bad, the reverse of priority.
+            return nTxDepth > rhs.nTxDepth;
+        }
+    }
+
+    CTxPriority(CTransaction &new_tx, int64 nFees) {
+        tx = new_tx;
+
+        nSumTxSize = nSumTxFees = 0;
+        nDirtySumTxSize = ::GetSerializeSize(new_tx, SER_NETWORK, PROTOCOL_VERSION);
+        nDirtySumTxFees = nFees;
+
+        nTxDepth = 0;
+        nDirtyTxDepth = 1;
+    }
+};
+typedef typename boost::heap::fibonacci_heap<CTxPriority>::handle_type PriorityHeapHandle;
 
 class CTxMemPool
 {
 public:
     mutable CCriticalSection cs;
-    std::map<uint256, CTransaction> mapTx;
+    boost::heap::fibonacci_heap<CTxPriority> heapTxPriority;
+    std::map<uint256, PriorityHeapHandle> mapTxPriority;
     std::map<COutPoint, CInPoint> mapNextTx;
 
-    bool accept(CValidationState &state, CTransaction &tx, bool fLimitFree, bool* pfMissingInputs);
+    std::list<uint256> listDirtyChildren;
+    std::list<uint256> listDirtyParents;
+
+    bool accept(CValidationState &state, CTransaction &tx, bool fLimitFree, bool* pfMissingInputs, bool fCleanup = true);
     bool addUnchecked(const uint256& hash, CTransaction &tx);
     bool remove(const CTransaction &tx, bool fRecursive = false);
     bool removeConflicts(const CTransaction &tx);
+    void cleanupDirtyParents();
+    void cleanupDirtyChildren();
     void clear();
     void queryHashes(std::vector<uint256>& vtxid);
     void pruneSpent(const uint256& hash, CCoins &coins);
@@ -2075,17 +2149,17 @@ public:
     unsigned long size()
     {
         LOCK(cs);
-        return mapTx.size();
+        return mapTxPriority.size();
     }
 
     bool exists(uint256 hash)
     {
-        return (mapTx.count(hash) != 0);
+        return (mapTxPriority.count(hash) != 0);
     }
 
     CTransaction& lookup(uint256 hash)
     {
-        return mapTx[hash];
+        return (*mapTxPriority[hash]).tx;
     }
 };
 
