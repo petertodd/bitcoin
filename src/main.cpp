@@ -672,35 +672,50 @@ bool CTxMemPool::accept(CValidationState &state, CTransaction &tx, bool fCheckIn
             return false;
     }
 
-    // Check for conflicts with in-memory transactions
-    CTransaction* ptxOld = NULL;
+    // Find all conflicting in-memory transactions to determine later if it
+    // would be rational to replace them.
+    set<CTransaction *> sptxConflicts;
     for (unsigned int i = 0; i < tx.vin.size(); i++)
     {
         COutPoint outpoint = tx.vin[i].prevout;
-        if (mapNextTx.count(outpoint))
-        {
-            // Disable replacement feature for now
-            return false;
-
-            // Allow replacing with a newer version of the same transaction
-            if (i != 0)
-                return false;
-            ptxOld = mapNextTx[outpoint].ptx;
-            if (ptxOld->IsFinal())
-                return false;
-            if (!tx.IsNewerThan(*ptxOld))
-                return false;
-            for (unsigned int i = 0; i < tx.vin.size(); i++)
+        if (mapNextTx.count(outpoint)){
+            // If a in-memory transaction has further transactions that spend
+            // its outputs, don't replace it. Doing so without recursive fee
+            // evaluation would allow for a DoS attack by creating long
+            // transaction chains, then replacing the whole chain with just a
+            // single transaction - the subsequent transactions in the chain
+            // haven't paid for the network bandwidth they consumed.
+            CTransaction* ptxOld = mapNextTx[outpoint].ptx;
+            for (unsigned int j = 0; j < ptxOld->vout.size(); j++)
             {
-                COutPoint outpoint = tx.vin[i].prevout;
-                if (!mapNextTx.count(outpoint) || mapNextTx[outpoint].ptx != ptxOld)
-                    return false;
+                // A second DoS attack would be to create a bunch of very large
+                // transactions, where the last input of one of them had been
+                // spent, then create another large transaction spending the
+                // first set. O(n^2) work would be done before finding that the
+                // txout was spent. Prevent this by limiting j, and simply
+                // failing if that limit is reached.
+                if (j > 5)
+                    return error("CTxMemPool::accept() : DoS limit reached in replacement evaluation");
+
+                COutPoint oldtx_outpoint(ptxOld->GetHash(), j);
+                if (mapNextTx.count(oldtx_outpoint))
+                    return error("CTxMemPool::accept() : outputs of old tx already spent; can't replace with %s",
+                            hash.ToString().c_str());
             }
-            break;
+
+            sptxConflicts.insert(mapNextTx[outpoint].ptx);
         }
     }
 
-    if (fCheckInputs)
+    if (!fCheckInputs)
+    {
+        // Do not allow conflicts when we are *not* checking inputs.
+        //
+        // FIXME: BlueMatt thinks fCheckInputs can be removed entirely.
+        if (sptxConflicts.size())
+            return false;
+    }
+    else
     {
         CCoinsView dummy;
         CCoinsViewCache view(dummy);
@@ -722,6 +737,15 @@ bool CTxMemPool::accept(CValidationState &state, CTransaction &tx, bool fCheckIn
                 if (pfMissingInputs)
                     *pfMissingInputs = true;
                 return false;
+            }
+        }
+
+        // Load replacement candidate inputs into the cache for fee
+        // calculation.
+        BOOST_FOREACH(CTransaction *conflicting_tx, sptxConflicts) {
+            BOOST_FOREACH(const CTxIn txin, conflicting_tx->vin) {
+                if (!view.HaveCoins(txin.prevout.hash))
+                    assert(false);
             }
         }
 
@@ -804,23 +828,56 @@ bool CTxMemPool::accept(CValidationState &state, CTransaction &tx, bool fCheckIn
         {
             return error("CTxMemPool::accept() : ConnectInputs failed %s", hash.ToString().substr(0,10).c_str());
         }
+
+        // If there are conflicting transactions, determine if replacing them
+        // would be economically rational.
+        if (sptxConflicts.size()){
+            int64 nConflictingFees = 0;
+            unsigned int nConflictingSize = 0;
+            BOOST_FOREACH(CTransaction *conflicting_tx, sptxConflicts) {
+                nConflictingFees += conflicting_tx->GetValueIn(view) - conflicting_tx->GetValueOut();
+                nConflictingSize += ::GetSerializeSize(*conflicting_tx, SER_NETWORK, PROTOCOL_VERSION);
+            }
+
+            // Don't allow the transaction at all unless it adds fees by at
+            // least CTransaction::nMinRelayTxFee per KB of data it broadcasts
+            // on the network.
+            //
+            // Additionally as a temporary measure require an additional 10x
+            // multiplier to account for the fact that the transaction will not
+            // be in other miner's signature caches, thus increasing the chance
+            // that we'll get orphaned.
+            int64 nDeltaFees = nFees - nConflictingFees;
+            int64 nRelayFee = (int64)((double)nSize/1000 * CTransaction::nMinRelayTxFee*10);
+            if (nDeltaFees < nRelayFee)
+                return error("CTxMemPool::accept() : rejecting replacement %s, not enough additional fees to relay",
+                        hash.ToString().c_str());
+
+            // Replace only if new fees-per-kb is > previous fees-per-kb.
+            double dOldFeesPerKB = (double)nConflictingFees/((double)nConflictingSize/1000);
+            double dNewFeesPerKB = (double)nFees/((double)nSize/1000);
+            if (dOldFeesPerKB > dNewFeesPerKB)
+                return error("CTxMemPool::accept() : rejecting uneconomical replacement %s",
+                        hash.ToString().c_str());
+
+            // FIXME: for debugging
+            printf("nConflictingFees = %f nConflictingSize = %d nFees = %f nSize = %d dOldFeesPerKB = %f dNewFeesPerKB = %f\n",
+                    (double)nConflictingFees/COIN, nConflictingSize, (double)nFees/COIN, nSize, dOldFeesPerKB/COIN, dNewFeesPerKB/COIN);
+        }
     }
 
     // Store transaction in memory
     {
         LOCK(cs);
-        if (ptxOld)
-        {
-            printf("CTxMemPool::accept() : replacing tx %s with new version\n", ptxOld->GetHash().ToString().c_str());
-            remove(*ptxOld);
+        BOOST_FOREACH(CTransaction *conflicting_tx, sptxConflicts) {
+            printf("CTxMemPool::accept() : replacing tx %s with %s\n",
+                    conflicting_tx->GetHash().ToString().c_str(),
+                    hash.ToString().c_str());
+            remove(*conflicting_tx, true);
         }
         addUnchecked(hash, tx);
     }
 
-    ///// are we sure this is ok when loading transactions or restoring block txes
-    // If updated, erase old tx from wallet
-    if (ptxOld)
-        EraseFromWallets(ptxOld->GetHash());
     SyncWithWallets(hash, tx, NULL, true);
 
     printf("CTxMemPool::accept() : accepted %s (poolsz %"PRIszu")\n",
