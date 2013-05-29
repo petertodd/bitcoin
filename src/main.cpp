@@ -753,23 +753,12 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
     if (pool.exists(hash))
         return false;
 
-    // Check for conflicts with in-memory transactions
-    {
-    LOCK(pool.cs); // protect pool.mapNextTx
-    for (unsigned int i = 0; i < tx.vin.size(); i++)
-    {
-        COutPoint outpoint = tx.vin[i].prevout;
-        if (pool.mapNextTx.count(outpoint))
-        {
-            // Disable replacement feature for now
-            return false;
-        }
-    }
-    }
-
     {
         CCoinsView dummy;
         CCoinsViewCache view(dummy);
+
+        int64_t nConflictingFees = 0;
+        unsigned int nConflictingSize = 0;
 
         {
         LOCK(pool.cs);
@@ -795,6 +784,37 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
         if (!view.HaveInputs(tx))
             return state.Invalid(error("AcceptToMemoryPool : inputs already spent"),
                                  REJECT_DUPLICATE, "bad-txns-inputs-spent");
+
+        // While we have the mempool locked determine total fees and size
+        // of conflicting transactions. We do this now as sptxConflicts
+        // contains pointers to transactions in the pool that may be made after
+        // the lock is released.
+
+        set<const CTransaction *> sptxConflicts;
+        BOOST_FOREACH(const CTxIn txin, tx.vin) {
+            if (pool.mapNextTx.count(txin.prevout))
+                sptxConflicts.insert(pool.mapNextTx[txin.prevout].ptx);
+        }
+
+        BOOST_FOREACH(const CTransaction *ptxConflicting, sptxConflicts) {
+            // If a in-memory transaction has further transactions that spend
+            // its outputs, don't replace it. Doing so without recursive fee
+            // evaluation would allow for a DoS attack by creating long
+            // transaction chains, then replacing the whole chain with just a
+            // single transaction - the subsequent transactions in the chain
+            // haven't paid for the network bandwidth they consumed.
+            uint256 hashConflicting = ptxConflicting->GetHash();
+            for (unsigned int i = 0; i < ptxConflicting->vout.size(); i++)
+            {
+                if (pool.mapNextTx.count(COutPoint(hashConflicting, i)))
+                    return state.Invalid(error("AcceptToMemoryPool : outputs of conflicting tx already spent; can't replace with %s",
+                                               hash.ToString()),
+                                         REJECT_DUPLICATE, "bad-txns-inputs-spent");
+            }
+
+            nConflictingFees += view.GetValueIn(*ptxConflicting) - ptxConflicting->GetValueOut();
+            nConflictingSize += ::GetSerializeSize(*ptxConflicting, SER_NETWORK, PROTOCOL_VERSION);
+        }
 
         // Bring the best block into scope
         view.GetBestBlock();
@@ -855,14 +875,52 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
                          hash.ToString(),
                          nFees, CTransaction::nMinRelayTxFee * 10000);
 
+
+        // If there are conflicting transactions, determine if replacing them
+        // would be economically rational.
+        if (nConflictingFees > 0)
+        {
+            // Don't allow the transaction at all unless it adds fees by at
+            // least CTransaction::nMinRelayTxFee per KB of data it broadcasts
+            // on the network.
+            int64_t nDeltaFees = nFees - nConflictingFees;
+            int64_t nRelayFee = (int64_t)((double)nSize/1000 * CTransaction::nMinRelayTxFee);
+            if (nDeltaFees < nRelayFee)
+                return state.DoS(0, error("AcceptToMemoryPool : rejecting replacement %s, not enough additional fees to relay; %d < %d",
+                                          hash.ToString(), nDeltaFees, nRelayFee),
+                                 REJECT_INSUFFICIENTFEE, "insufficient fee");
+
+            // Replace only if new fees-per-kb is > previous fees-per-kb.
+            double dOldFeesPerKB = (double)nConflictingFees/((double)nConflictingSize/1000);
+            double dNewFeesPerKB = (double)nFees/((double)nSize/1000);
+            if (dOldFeesPerKB > dNewFeesPerKB)
+                return state.DoS(0, error("AcceptToMemoryPool : rejecting uneconomical replacement %s; %f BTC/KB < %d BTC/KB",
+                                          hash.ToString(), dNewFeesPerKB/COIN, dOldFeesPerKB/COIN),
+                                 REJECT_INSUFFICIENTFEE, "insufficient fee");
+        }
+
         // Check against previous transactions
         // This is done last to help prevent CPU exhaustion denial-of-service attacks.
         if (!CheckInputs(tx, state, view, true, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC))
         {
             return error("AcceptToMemoryPool: : ConnectInputs failed %s", hash.ToString());
         }
+
+        // Remove conflicting transactions from the mempool
+        list<CTransaction> ltxConflicted;
+        mempool.removeConflicts(tx, ltxConflicted);
+
         // Store transaction in memory
         pool.addUnchecked(hash, entry);
+
+        BOOST_FOREACH(const CTransaction &txConflicted, ltxConflicted) {
+            LogPrint("mempool", "replacing tx %s with %s for %s BTC additional fees\n",
+                    txConflicted.GetHash().ToString(),
+                    hash.ToString(),
+                    FormatMoney(nFees - nConflictingFees));
+
+            // Should tell wallets about transactions that were replaced here.
+        }
     }
 
     g_signals.SyncTransaction(hash, tx, NULL);
