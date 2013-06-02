@@ -651,7 +651,7 @@ void CTxMemPool::pruneSpent(const uint256 &hashTx, CCoins &coins)
     }
 }
 
-bool CTxMemPool::accept(CValidationState &state, CTransaction &tx, bool fCheckInputs, bool fLimitFree,
+bool CTxMemPool::accept(CValidationState &state, CTransaction &tx, bool fLimitFree,
                         bool* pfMissingInputs)
 {
     if (pfMissingInputs)
@@ -708,89 +708,86 @@ bool CTxMemPool::accept(CValidationState &state, CTransaction &tx, bool fCheckIn
         }
     }
 
-    if (fCheckInputs)
+    CCoinsView dummy;
+    CCoinsViewCache view(dummy);
+
     {
-        CCoinsView dummy;
-        CCoinsViewCache view(dummy);
+    LOCK(cs);
+    CCoinsViewMemPool viewMemPool(*pcoinsTip, *this);
+    view.SetBackend(viewMemPool);
 
-        {
-        LOCK(cs);
-        CCoinsViewMemPool viewMemPool(*pcoinsTip, *this);
-        view.SetBackend(viewMemPool);
+    // do we already have it?
+    if (view.HaveCoins(hash))
+        return false;
 
-        // do we already have it?
-        if (view.HaveCoins(hash))
+    // do all inputs exist?
+    // Note that this does not check for the presence of actual outputs (see the next check for that),
+    // only helps filling in pfMissingInputs (to determine missing vs spent).
+    BOOST_FOREACH(const CTxIn txin, tx.vin) {
+        if (!view.HaveCoins(txin.prevout.hash)) {
+            if (pfMissingInputs)
+                *pfMissingInputs = true;
             return false;
-
-        // do all inputs exist?
-        // Note that this does not check for the presence of actual outputs (see the next check for that),
-        // only helps filling in pfMissingInputs (to determine missing vs spent).
-        BOOST_FOREACH(const CTxIn txin, tx.vin) {
-            if (!view.HaveCoins(txin.prevout.hash)) {
-                if (pfMissingInputs)
-                    *pfMissingInputs = true;
-                return false;
-            }
         }
+    }
 
-        // are the actual inputs available?
-        if (!tx.HaveInputs(view))
-            return state.Invalid(error("CTxMemPool::accept() : inputs already spent"));
+    // are the actual inputs available?
+    if (!tx.HaveInputs(view))
+        return state.Invalid(error("CTxMemPool::accept() : inputs already spent"));
 
-        // Bring the best block into scope
-        view.GetBestBlock();
+    // Bring the best block into scope
+    view.GetBestBlock();
 
-        // we have all inputs cached now, so switch back to dummy, so we don't need to keep lock on mempool
-        view.SetBackend(dummy);
-        }
+    // we have all inputs cached now, so switch back to dummy, so we don't need to keep lock on mempool
+    view.SetBackend(dummy);
+    }
 
-        // Check for non-standard pay-to-script-hash in inputs
-        if (!tx.AreInputsStandard(view) && !fTestNet)
-            return error("CTxMemPool::accept() : nonstandard transaction input");
+    // Check for non-standard pay-to-script-hash in inputs
+    if (!tx.AreInputsStandard(view) && !fTestNet)
+        return error("CTxMemPool::accept() : nonstandard transaction input");
 
-        // Note: if you modify this code to accept non-standard transactions, then
-        // you should add code here to check that the transaction does a
-        // reasonable number of ECDSA signature verifications.
+    // Note: if you modify this code to accept non-standard transactions, then
+    // you should add code here to check that the transaction does a
+    // reasonable number of ECDSA signature verifications.
 
-        int64 nFees = tx.GetValueIn(view)-tx.GetValueOut();
-        unsigned int nSize = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
+    int64 nFees = tx.GetValueIn(view)-tx.GetValueOut();
+    unsigned int nSize = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
 
-        // Don't accept it if it can't get into a block
-        int64 txMinFee = tx.GetMinFee(1000, true, GMF_RELAY);
-        if (fLimitFree && nFees < txMinFee)
-            return error("CTxMemPool::accept() : not enough fees %s, %"PRI64d" < %"PRI64d,
-                         hash.ToString().c_str(),
-                         nFees, txMinFee);
+    // Don't accept it if it can't get into a block
+    int64 txMinFee = tx.GetMinFee(1000, true, GMF_RELAY);
+    if (fLimitFree && nFees < txMinFee)
+        return error("CTxMemPool::accept() : not enough fees %s, %"PRI64d" < %"PRI64d,
+                     hash.ToString().c_str(),
+                     nFees, txMinFee);
 
-        // Continuously rate-limit free transactions
-        // This mitigates 'penny-flooding' -- sending thousands of free transactions just to
-        // be annoying or make others' transactions take longer to confirm.
-        if (fLimitFree && nFees < CTransaction::nMinRelayTxFee)
-        {
-            static double dFreeCount;
-            static int64 nLastTime;
-            int64 nNow = GetTime();
+    // Continuously rate-limit free transactions
+    // This mitigates 'penny-flooding' -- sending thousands of free transactions just to
+    // be annoying or make others' transactions take longer to confirm.
+    if (fLimitFree && nFees < CTransaction::nMinRelayTxFee)
+    {
+        static double dFreeCount;
+        static int64 nLastTime;
+        int64 nNow = GetTime();
 
-            LOCK(cs);
+        LOCK(cs);
 
-            // Use an exponentially decaying ~10-minute window:
-            dFreeCount *= pow(1.0 - 1.0/600.0, (double)(nNow - nLastTime));
-            nLastTime = nNow;
-            // -limitfreerelay unit is thousand-bytes-per-minute
-            // At default rate it would take over a month to fill 1GB
-            if (dFreeCount >= GetArg("-limitfreerelay", 15)*10*1000)
-                return error("CTxMemPool::accept() : free transaction rejected by rate limiter");
-            if (fDebug)
-                printf("Rate limit dFreeCount: %g => %g\n", dFreeCount, dFreeCount+nSize);
-            dFreeCount += nSize;
-        }
+        // Use an exponentially decaying ~10-minute window:
+        dFreeCount *= pow(1.0 - 1.0/600.0, (double)(nNow - nLastTime));
+        nLastTime = nNow;
+        // -limitfreerelay unit is thousand-bytes-per-minute
+        // At default rate it would take over a month to fill 1GB
+        if (dFreeCount >= GetArg("-limitfreerelay", 15)*10*1000)
+            return error("CTxMemPool::accept() : free transaction rejected by rate limiter");
+        if (fDebug)
+            printf("Rate limit dFreeCount: %g => %g\n", dFreeCount, dFreeCount+nSize);
+        dFreeCount += nSize;
+    }
 
-        // Check against previous transactions
-        // This is done last to help prevent CPU exhaustion denial-of-service attacks.
-        if (!tx.CheckInputs(state, view, true, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC))
-        {
-            return error("CTxMemPool::accept() : ConnectInputs failed %s", hash.ToString().c_str());
-        }
+    // Check against previous transactions
+    // This is done last to help prevent CPU exhaustion denial-of-service attacks.
+    if (!tx.CheckInputs(state, view, true, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC))
+    {
+        return error("CTxMemPool::accept() : ConnectInputs failed %s", hash.ToString().c_str());
     }
 
     // Store transaction in memory
@@ -816,10 +813,10 @@ bool CTxMemPool::accept(CValidationState &state, CTransaction &tx, bool fCheckIn
     return true;
 }
 
-bool CTransaction::AcceptToMemoryPool(CValidationState &state, bool fCheckInputs, bool fLimitFree, bool* pfMissingInputs)
+bool CTransaction::AcceptToMemoryPool(CValidationState &state, bool fLimitFree, bool* pfMissingInputs)
 {
     try {
-        return mempool.accept(state, *this, fCheckInputs, fLimitFree, pfMissingInputs);
+        return mempool.accept(state, *this, fLimitFree, pfMissingInputs);
     } catch(std::runtime_error &e) {
         return state.Abort(_("System error: ") + e.what());
     }
@@ -933,15 +930,15 @@ int CMerkleTx::GetBlocksToMaturity() const
 }
 
 
-bool CMerkleTx::AcceptToMemoryPool(bool fCheckInputs, bool fLimitFree)
+bool CMerkleTx::AcceptToMemoryPool(bool fLimitFree)
 {
     CValidationState state;
-    return CTransaction::AcceptToMemoryPool(state, fCheckInputs, fLimitFree);
+    return CTransaction::AcceptToMemoryPool(state, fLimitFree);
 }
 
 
 
-bool CWalletTx::AcceptWalletTransaction(bool fCheckInputs)
+bool CWalletTx::AcceptWalletTransaction()
 {
     {
         LOCK(mempool.cs);
@@ -952,10 +949,10 @@ bool CWalletTx::AcceptWalletTransaction(bool fCheckInputs)
             {
                 uint256 hash = tx.GetHash();
                 if (!mempool.exists(hash) && pcoinsTip->HaveCoins(hash))
-                    tx.AcceptToMemoryPool(fCheckInputs, false);
+                    tx.AcceptToMemoryPool(false);
             }
         }
-        return AcceptToMemoryPool(fCheckInputs, false);
+        return AcceptToMemoryPool(false);
     }
     return false;
 }
@@ -1846,7 +1843,7 @@ bool SetBestChain(CValidationState &state, CBlockIndex* pindexNew)
     BOOST_FOREACH(CTransaction& tx, vResurrect) {
         // ignore validation errors in resurrected transactions
         CValidationState stateDummy;
-        tx.AcceptToMemoryPool(stateDummy, true, false);
+        tx.AcceptToMemoryPool(stateDummy, false);
     }
 
     // Delete redundant memory transactions that are in the connected branch
@@ -3477,7 +3474,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
 
         bool fMissingInputs = false;
         CValidationState state;
-        if (tx.AcceptToMemoryPool(state, true, true, &fMissingInputs))
+        if (tx.AcceptToMemoryPool(state, true, &fMissingInputs))
         {
             RelayTransaction(tx, inv.hash, vMsg);
             mapAlreadyAskedFor.erase(inv);
@@ -3500,7 +3497,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
                     // Use a dummy CValidationState so someone can't setup nodes to counter-DoS based on orphan resolution (that is, feeding people an invalid transaction based on LegitTxX in order to get anyone relaying LegitTxX banned)
                     CValidationState stateDummy;
 
-                    if (tx.AcceptToMemoryPool(stateDummy, true, true, &fMissingInputs2))
+                    if (tx.AcceptToMemoryPool(stateDummy, true, &fMissingInputs2))
                     {
                         printf("   accepted orphan tx %s\n", inv.hash.ToString().c_str());
                         RelayTransaction(tx, inv.hash, vMsg);

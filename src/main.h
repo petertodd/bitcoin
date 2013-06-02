@@ -666,7 +666,7 @@ public:
     bool CheckTransaction(CValidationState &state) const;
 
     // Try to accept this transaction into the memory pool
-    bool AcceptToMemoryPool(CValidationState &state, bool fCheckInputs=true, bool fLimitFree = true, bool* pfMissingInputs=NULL);
+    bool AcceptToMemoryPool(CValidationState &state, bool fLimitFree = true, bool* pfMissingInputs=NULL);
 
 protected:
     static const CTxOut &GetOutputFor(const CTxIn& input, CCoinsViewCache& mapInputs);
@@ -1145,7 +1145,7 @@ public:
     int GetDepthInMainChain() const { CBlockIndex *pindexRet; return GetDepthInMainChain(pindexRet); }
     bool IsInMainChain() const { return GetDepthInMainChain() > 0; }
     int GetBlocksToMaturity() const;
-    bool AcceptToMemoryPool(bool fCheckInputs=true, bool fLimitFree=true);
+    bool AcceptToMemoryPool(bool fLimitFree=true);
 };
 
 
@@ -2064,7 +2064,7 @@ public:
     std::map<uint256, CTransaction> mapTx;
     std::map<COutPoint, CInPoint> mapNextTx;
 
-    bool accept(CValidationState &state, CTransaction &tx, bool fCheckInputs, bool fLimitFree, bool* pfMissingInputs);
+    bool accept(CValidationState &state, CTransaction &tx, bool fLimitFree, bool* pfMissingInputs);
     bool addUnchecked(const uint256& hash, CTransaction &tx);
     bool remove(const CTransaction &tx, bool fRecursive = false);
     bool removeConflicts(const CTransaction &tx);
