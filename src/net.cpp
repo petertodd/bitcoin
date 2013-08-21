@@ -609,6 +609,7 @@ void CNode::copyStats(CNodeStats &stats)
     X(nMisbehavior);
     X(nSendBytes);
     X(nRecvBytes);
+    X(nBlocksRequested);
     stats.fSyncNode = (this == pnodeSync);
 }
 #undef X
