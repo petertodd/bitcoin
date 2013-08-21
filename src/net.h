@@ -267,7 +267,7 @@ public:
         nMisbehavior = 0;
         fRelayTxes = false;
         setInventoryKnown.max_size(SendBufferSize() / 1000);
-        pfilter = new CBloomFilter();
+        pfilter = NULL;
 
         // Be shy and don't send version until we hear
         if (hSocket != INVALID_SOCKET && !fInbound)
