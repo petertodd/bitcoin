@@ -183,7 +183,7 @@ void UpdateTime(CBlockHeader& block, const CBlockIndex* pindexPrev);
 /** Create a new block index entry for a given block hash */
 CBlockIndex * InsertBlockIndex(uint256 hash);
 /** Verify a signature */
-bool VerifySignature(const CCoins& txFrom, const CTransaction& txTo, unsigned int nIn, unsigned int flags, int nHashType);
+bool VerifySignature(const CCoins& txFrom, const CTransaction& txTo, unsigned int nIn, unsigned int flags, int nHashType, int nBlockHeight, int64 nBlockTime);
 /** Abort with a message */
 bool AbortNode(const std::string &msg);
 
@@ -307,7 +307,8 @@ inline bool AllowFree(double dPriority)
 // instead of being performed inline.
 bool CheckInputs(const CTransaction& tx, CValidationState &state, CCoinsViewCache &view, bool fScriptChecks = true,
                  unsigned int flags = SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC,
-                 std::vector<CScriptCheck> *pvChecks = NULL);
+                 std::vector<CScriptCheck> *pvChecks = NULL,
+                 int nBlockHeight = 0, int64 nBlockTime = 0);
 
 // Apply the effects of this transaction on the UTXO set represented by view
 void UpdateCoins(const CTransaction& tx, CValidationState &state, CCoinsViewCache &inputs, CTxUndo &txundo, int nHeight, const uint256 &txhash);
@@ -320,6 +321,7 @@ bool CheckTransaction(const CTransaction& tx, CValidationState& state);
 */
 bool IsStandardTx(const CTransaction& tx, std::string& reason);
 
+bool IsFinalLockTime(unsigned int nLockTime, int nBlockHeight = 0, int64 nBlockTime = 0);
 bool IsFinalTx(const CTransaction &tx, int nBlockHeight = 0, int64 nBlockTime = 0);
 
 /** Amount of bitcoins spent by the transaction.
@@ -408,12 +410,15 @@ private:
     unsigned int nIn;
     unsigned int nFlags;
     int nHashType;
+    int nBlockHeight;
+    int64 nBlockTime;
 
 public:
     CScriptCheck() {}
-    CScriptCheck(const CCoins& txFromIn, const CTransaction& txToIn, unsigned int nInIn, unsigned int nFlagsIn, int nHashTypeIn) :
+    CScriptCheck(const CCoins& txFromIn, const CTransaction& txToIn, unsigned int nInIn, unsigned int nFlagsIn, int nHashTypeIn, int nBlockHeight, int64 nBlockTime) :
         scriptPubKey(txFromIn.vout[txToIn.vin[nInIn].prevout.n].scriptPubKey),
-        ptxTo(&txToIn), nIn(nInIn), nFlags(nFlagsIn), nHashType(nHashTypeIn) { }
+        ptxTo(&txToIn), nIn(nInIn), nFlags(nFlagsIn), nHashType(nHashTypeIn),
+        nBlockHeight(nBlockHeight), nBlockTime(nBlockTime) { }
 
     bool operator()() const;
 
@@ -423,6 +428,8 @@ public:
         std::swap(nIn, check.nIn);
         std::swap(nFlags, check.nFlags);
         std::swap(nHashType, check.nHashType);
+        std::swap(nBlockHeight, check.nBlockHeight);
+        std::swap(nBlockTime, check.nBlockTime);
     }
 };
 

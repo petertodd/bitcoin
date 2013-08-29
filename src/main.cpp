@@ -514,16 +514,23 @@ bool IsStandardTx(const CTransaction& tx, string& reason)
     return true;
 }
 
-bool IsFinalTx(const CTransaction &tx, int nBlockHeight, int64 nBlockTime)
+bool IsFinalLockTime(unsigned int nLockTime, int nBlockHeight, int64 nBlockTime)
 {
     // Time based nLockTime implemented in 0.1.6
-    if (tx.nLockTime == 0)
+    if (nLockTime == 0)
         return true;
     if (nBlockHeight == 0)
         nBlockHeight = nBestHeight;
     if (nBlockTime == 0)
         nBlockTime = GetAdjustedTime();
-    if ((int64)tx.nLockTime < ((int64)tx.nLockTime < LOCKTIME_THRESHOLD ? (int64)nBlockHeight : nBlockTime))
+    if ((int64)nLockTime < ((int64)nLockTime < LOCKTIME_THRESHOLD ? (int64)nBlockHeight : nBlockTime))
+        return true;
+    return false;
+}
+
+bool IsFinalTx(const CTransaction &tx, int nBlockHeight, int64 nBlockTime)
+{
+    if (IsFinalLockTime(tx.nLockTime, nBlockHeight, nBlockTime))
         return true;
     BOOST_FOREACH(const CTxIn& txin, tx.vin)
         if (!txin.IsFinal())
@@ -582,7 +589,7 @@ bool AreInputsStandard(const CTransaction& tx, CCoinsViewCache& mapInputs)
         // beside "push data" in the scriptSig the
         // IsStandard() call returns false
         vector<vector<unsigned char> > stack;
-        if (!EvalScript(stack, tx.vin[i].scriptSig, tx, i, false, 0))
+        if (!EvalScript(stack, tx.vin[i].scriptSig, tx, i, false, 0, 0, 0))
             return false;
 
         if (whichType == TX_SCRIPTHASH)
@@ -923,7 +930,14 @@ bool CTxMemPool::accept(CValidationState &state, const CTransaction &tx, bool fL
 
         // Check against previous transactions
         // This is done last to help prevent CPU exhaustion denial-of-service attacks.
-        if (!CheckInputs(tx, state, view, true, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC))
+        //
+        // Note that we can enforce CHECKLOCKTIMEVERIFY semantics whether or
+        // not miners have upgraded because doing so only rejects transactions
+        // from the mempool; it'll never allow a transaction in the mempool
+        // that can't get mined. In any case spending such a txout is
+        // non-standard anyway.
+        if (!CheckInputs(tx, state, view, true,
+                    SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC | SCRIPT_VERIFY_LOCKTIME))
         {
             return error("CTxMemPool::accept() : ConnectInputs failed %s", hash.ToString().c_str());
         }
@@ -1649,17 +1663,17 @@ bool CCoinsViewCache::HaveInputs(const CTransaction& tx)
 
 bool CScriptCheck::operator()() const {
     const CScript &scriptSig = ptxTo->vin[nIn].scriptSig;
-    if (!VerifyScript(scriptSig, scriptPubKey, *ptxTo, nIn, nFlags, nHashType))
+    if (!VerifyScript(scriptSig, scriptPubKey, *ptxTo, nIn, nFlags, nHashType, nBlockHeight, nBlockTime))
         return error("CScriptCheck() : %s VerifySignature failed", ptxTo->GetHash().ToString().c_str());
     return true;
 }
 
-bool VerifySignature(const CCoins& txFrom, const CTransaction& txTo, unsigned int nIn, unsigned int flags, int nHashType)
+bool VerifySignature(const CCoins& txFrom, const CTransaction& txTo, unsigned int nIn, unsigned int flags, int nHashType, int nBlockHeight, int64 nBlockTime)
 {
-    return CScriptCheck(txFrom, txTo, nIn, flags, nHashType)();
+    return CScriptCheck(txFrom, txTo, nIn, flags, nHashType, nBlockHeight, nBlockTime)();
 }
 
-bool CheckInputs(const CTransaction& tx, CValidationState &state, CCoinsViewCache &inputs, bool fScriptChecks, unsigned int flags, std::vector<CScriptCheck> *pvChecks)
+bool CheckInputs(const CTransaction& tx, CValidationState &state, CCoinsViewCache &inputs, bool fScriptChecks, unsigned int flags, std::vector<CScriptCheck> *pvChecks, int nBlockHeight, int64 nBlockTime)
 {
     if (!tx.IsCoinBase())
     {
@@ -1718,7 +1732,7 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, CCoinsViewCach
                 const CCoins &coins = inputs.GetCoins(prevout.hash);
 
                 // Verify signature
-                CScriptCheck check(coins, tx, i, flags, 0);
+                CScriptCheck check(coins, tx, i, flags, 0, nBlockHeight, nBlockTime);
                 if (pvChecks) {
                     pvChecks->push_back(CScriptCheck());
                     check.swap(pvChecks->back());
@@ -1726,7 +1740,7 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, CCoinsViewCach
                     if (flags & SCRIPT_VERIFY_STRICTENC) {
                         // For now, check whether the failure was caused by non-canonical
                         // encodings or not; if so, don't trigger DoS protection.
-                        CScriptCheck check(coins, tx, i, flags & (~SCRIPT_VERIFY_STRICTENC), 0);
+                        CScriptCheck check(coins, tx, i, flags & (~SCRIPT_VERIFY_STRICTENC), 0, nBlockHeight, nBlockTime);
                         if (check())
                             return state.Invalid();
                     }
@@ -1904,6 +1918,16 @@ bool ConnectBlock(CBlock& block, CValidationState& state, CBlockIndex* pindex, C
     unsigned int flags = SCRIPT_VERIFY_NOCACHE |
                          (fStrictPayToScriptHash ? SCRIPT_VERIFY_P2SH : SCRIPT_VERIFY_NONE);
 
+    // Enforce new OP_CHECKLOCKTIMEVERIFY opcode semantics
+    if (block.nVersion >= 3){
+        // only if 750 of the last 1,000 blocks are version 3 or greater (51/100 if testnet):
+        if ((!TestNet() && CBlockIndex::IsSuperMajority(3, pindex->pprev, 750, 1000)) ||
+            (TestNet() && CBlockIndex::IsSuperMajority(3, pindex->pprev, 51, 100)))
+        {
+            flags |= SCRIPT_VERIFY_LOCKTIME;
+        }
+    }
+
     CBlockUndo blockundo;
 
     CCheckQueueControl<CScriptCheck> control(fScriptChecks && nScriptCheckThreads ? &scriptcheckqueue : NULL);
@@ -1942,7 +1966,7 @@ bool ConnectBlock(CBlock& block, CValidationState& state, CBlockIndex* pindex, C
             nFees += view.GetValueIn(tx)-GetValueOut(tx);
 
             std::vector<CScriptCheck> vChecks;
-            if (!CheckInputs(tx, state, view, fScriptChecks, flags, nScriptCheckThreads ? &vChecks : NULL))
+            if (!CheckInputs(tx, state, view, fScriptChecks, flags, nScriptCheckThreads ? &vChecks : NULL, pindex->nHeight, block.GetBlockTime()))
                 return false;
             control.Add(vChecks);
         }
@@ -2446,6 +2470,16 @@ bool AcceptBlock(CBlock& block, CValidationState& state, CDiskBlockPos* dbp)
                 if (block.vtx[0].vin[0].scriptSig.size() < expect.size() ||
                     !std::equal(expect.begin(), expect.end(), block.vtx[0].vin[0].scriptSig.begin()))
                     return state.DoS(100, error("AcceptBlock() : block height mismatch in coinbase"));
+            }
+        }
+
+        // Reject block.nVersion=2 blocks when 95% (75% on testnet) of the network has upgraded:
+        if (block.nVersion < 3)
+        {
+            if ((!TestNet() && CBlockIndex::IsSuperMajority(3, pindexPrev, 950, 1000)) ||
+                (TestNet() && CBlockIndex::IsSuperMajority(3, pindexPrev, 75, 100)))
+            {
+                return state.Invalid(error("AcceptBlock() : rejected nVersion=2 block"));
             }
         }
     }
