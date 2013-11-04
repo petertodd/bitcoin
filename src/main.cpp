@@ -778,24 +778,41 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
         COutPoint outpoint = tx.vin[i].prevout;
         if (pool.mapNextTx.count(outpoint))
         {
-            // Disable replacement feature for now
-            return false;
-
-            // Allow replacing with a newer version of the same transaction
-            if (i != 0)
-                return false;
-            ptxOld = pool.mapNextTx[outpoint].ptx;
-            if (IsFinalTx(*ptxOld))
-                return false;
-            if (!tx.IsNewerThan(*ptxOld))
-                return false;
-            for (unsigned int i = 0; i < tx.vin.size(); i++)
-            {
-                COutPoint outpoint = tx.vin[i].prevout;
-                if (!pool.mapNextTx.count(outpoint) || pool.mapNextTx[outpoint].ptx != ptxOld)
+            // Conflict found.
+            if (ptxOld) {
+                // Replacements are only done on a 1-to-1 basis for now; we
+                // won't replace two transactions with one.
+                if (ptxOld != pool.mapNextTx[outpoint].ptx)
                     return false;
+
+            } else {
+                ptxOld = pool.mapNextTx[outpoint].ptx;
             }
-            break;
+        }
+    }
+
+    if (ptxOld)
+    {
+        // Old transactions outputs must be unspent, and all outputs must match new
+        // 1:1 (although nValue can change if new is greater than old)
+        if (ptxOld->vout.size() > tx.vout.size())
+            return error("AcceptToMemoryPool: : replacement %s has fewer outputs than original; can't replace",
+                    hash.ToString().c_str());
+
+        for (unsigned int i = 0; i < ptxOld->vout.size(); i++)
+        {
+            if (ptxOld->vout[i].scriptPubKey != tx.vout[i].scriptPubKey)
+                return error("AcceptToMemoryPool: : output %d of old tx doesn't pay same scriptPubKey as replacement %s",
+                             i, hash.ToString().c_str());
+
+            if (ptxOld->vout[i].nValue > tx.vout[i].nValue)
+                return error("AcceptToMemoryPool: : output %d pays more in old tx; can't replace with %s",
+                             i, hash.ToString().c_str());
+
+            COutPoint old_outpoint(ptxOld->GetHash(), i);
+            if (pool.mapNextTx.count(old_outpoint))
+                return error("AcceptToMemoryPool: : output %d of old tx already spent; can't replace with %s",
+                             i, hash.ToString().c_str());
         }
     }
     }
@@ -803,6 +820,9 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
     {
         CCoinsView dummy;
         CCoinsViewCache view(dummy);
+
+        int64 nOldFees = -1;
+        int64 nOldSize = -1;
 
         {
         LOCK(pool.cs);
@@ -822,6 +842,14 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
                     *pfMissingInputs = true;
                 return false;
             }
+        }
+
+        if (ptxOld)
+        {
+            // Calculate fees paid by previous transaction. Done here because we
+            // have the mempool locked, so working with ptxOld is safe.
+            nOldFees = view.GetValueIn(*ptxOld)-GetValueOut(*ptxOld);
+            nOldSize = ::GetSerializeSize(*ptxOld, SER_NETWORK, PROTOCOL_VERSION);
         }
 
         // are the actual inputs available?
@@ -845,6 +873,30 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
 
         int64 nFees = view.GetValueIn(tx)-GetValueOut(tx);
         unsigned int nSize = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
+
+        // If this is a replacement, only replace if new fees-per-kb > previous
+        // fees-per-kb, and if the new transaction spends at least
+        // CTransaction::nMinRelayTxFee per KB of data it broadcasts on the
+        // network.
+        if (ptxOld)
+        {
+            assert(nOldFees >= 0);
+            assert(nOldSize > 0);
+
+            // Require at least CTransaction::nMinRelayTxFee per KB of data
+            // additional fee to ensure data is fairly paid for.
+            if (nFees - nOldFees < (1 + nSize/1000) * CTransaction::nMinRelayTxFee)
+                return error("AcceptToMemoryPool: : not enough additional fees for replacement %s",
+                             hash.ToString().c_str());
+
+            // Only replace if profitable in terms of fees/KB. Generally the
+            // above condition will assure this.
+            double dOldFeesPerKB = (double)nOldFees*1000 / (double)nOldSize;
+            double dNewFeesPerKB = (double)nFees*1000 / (double)nSize;
+            if (dOldFeesPerKB > dNewFeesPerKB)
+                return error("AcceptToMemoryPool: : rejecting uneconomical replacement %s",
+                        hash.ToString().c_str());
+        }
 
         // Don't accept it if it can't get into a block
         int64 txMinFee = GetMinFee(tx, true, GMF_RELAY);
@@ -893,8 +945,12 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
     {
         if (ptxOld)
         {
-            LogPrint("mempool", "AcceptToMemoryPool: : replacing tx %s with new version\n", ptxOld->GetHash().ToString().c_str());
-            pool.remove(*ptxOld);
+            LogPrint("mempool", "AcceptToMemoryPool: : replacing tx %s with new version\n",
+                     ptxOld->GetHash().ToString().c_str());
+
+            // Recursive, just in case a dependent got in while we didn't
+            // happen to hold a lock or something.
+            pool.remove(*ptxOld, true);
         }
         pool.addUnchecked(hash, tx);
     }

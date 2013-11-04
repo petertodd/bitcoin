@@ -76,35 +76,6 @@ uint256 CTransaction::GetHash() const
     return SerializeHash(*this);
 }
 
-bool CTransaction::IsNewerThan(const CTransaction& old) const
-{
-    if (vin.size() != old.vin.size())
-        return false;
-    for (unsigned int i = 0; i < vin.size(); i++)
-        if (vin[i].prevout != old.vin[i].prevout)
-            return false;
-
-    bool fNewer = false;
-    unsigned int nLowest = std::numeric_limits<unsigned int>::max();
-    for (unsigned int i = 0; i < vin.size(); i++)
-    {
-        if (vin[i].nSequence != old.vin[i].nSequence)
-        {
-            if (vin[i].nSequence <= nLowest)
-            {
-                fNewer = false;
-                nLowest = vin[i].nSequence;
-            }
-            if (old.vin[i].nSequence < nLowest)
-            {
-                fNewer = true;
-                nLowest = old.vin[i].nSequence;
-            }
-        }
-    }
-    return fNewer;
-}
-
 std::string CTransaction::ToString() const
 {
     std::string str;
