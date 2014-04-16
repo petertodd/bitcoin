@@ -51,7 +51,7 @@ struct LocalServiceInfo {
 // Global state variables
 //
 bool fDiscover = true;
-uint64_t nLocalServices = NODE_NETWORK;
+uint64_t nLocalServices = NODE_NETWORK | NODE_REPLACE_BY_FEE;
 static CCriticalSection cs_mapLocalHost;
 static map<CNetAddr, LocalServiceInfo> mapLocalHost;
 static bool vfReachable[NET_MAX] = {};
