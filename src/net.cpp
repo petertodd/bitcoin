@@ -37,7 +37,12 @@
 using namespace std;
 using namespace boost;
 
-static const int MAX_OUTBOUND_CONNECTIONS = 8;
+
+static const int MAX_STANDARD_OUTBOUND_CONNECTIONS = 8;
+static const int MIN_REPLACE_BY_FEE_OUTBOUND_CONNECTIONS = 8;
+
+static const int MAX_OUTBOUND_CONNECTIONS = MAX_STANDARD_OUTBOUND_CONNECTIONS
+                                            + MIN_REPLACE_BY_FEE_OUTBOUND_CONNECTIONS;
 
 bool OpenNetworkConnection(const CAddress& addrConnect, CSemaphoreGrant *grantOutbound = NULL, const char *strDest = NULL, bool fOneShot = false);
 
@@ -1315,6 +1320,7 @@ void ThreadOpenConnections()
         // Only connect out to one peer per network group (/16 for IPv4).
         // Do this here so we don't have to critsect vNodes inside mapAddresses critsect.
         int nOutbound = 0;
+        int nOutboundReplaceByFee = 0;
         set<vector<unsigned char> > setConnected;
         {
             LOCK(cs_vNodes);
@@ -1322,6 +1328,9 @@ void ThreadOpenConnections()
                 if (!pnode->fInbound) {
                     setConnected.insert(pnode->addr.GetGroup());
                     nOutbound++;
+
+                    if (pnode->nServices & NODE_REPLACE_BY_FEE)
+                        nOutboundReplaceByFee++;
                 }
             }
         }
@@ -1354,6 +1363,13 @@ void ThreadOpenConnections()
 
             // do not allow non-default ports, unless after 50 invalid addresses selected already
             if (addr.GetPort() != Params().GetDefaultPort() && nTries < 50)
+                continue;
+
+            // Reserve REPLACE_BY_FEE_OUTBOUND_CONNECTIONS outbound connections
+            // for nodes advertising the replace-by-fee service.
+            if (!(addr.nServices & NODE_REPLACE_BY_FEE)
+                    && (nOutbound - nOutboundReplaceByFee)
+                           >= MAX_STANDARD_OUTBOUND_CONNECTIONS)
                 continue;
 
             addrConnect = addr;
