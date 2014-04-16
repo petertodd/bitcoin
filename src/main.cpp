@@ -1031,10 +1031,11 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
         pool.addUnchecked(hash, entry);
 
         BOOST_FOREACH(const CTransaction &txConflicted, ltxConflicted) {
-            LogPrint("mempool", "replacing tx %s with %s for %s BTC additional fees\n",
+            LogPrint("mempool", "replacing tx %s with %s for %s BTC additional fees, %d delta bytes\n",
                     txConflicted.GetHash().ToString(),
                     hash.ToString(),
-                    FormatMoney(nFees - nConflictingFees));
+                    FormatMoney(nFees - nConflictingFees),
+                    (int)nSize - (int)nConflictingSize);
 
             // Should tell wallets about transactions that were replaced here.
         }
