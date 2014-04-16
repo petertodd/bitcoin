@@ -62,6 +62,10 @@ class CMessageHeader
 enum
 {
     NODE_NETWORK = (1 << 0),
+
+    // Reserve 24-31 for temporary experiments
+
+    NODE_REPLACE_BY_FEE = (1 << 26),
 };
 
 /** A CService with information about it as peer */
