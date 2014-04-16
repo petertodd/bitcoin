@@ -3492,6 +3492,26 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
             return false;
         }
 
+        // Disconnect if we have already met our quota of non-NODE_REPLACE_BY_FEE nodes.
+        if (!(pfrom->nServices & NODE_REPLACE_BY_FEE))
+        {
+            int nNonReplaceByFeeConnections = 0;
+
+            LOCK(cs_vNodes);
+            BOOST_FOREACH(CNode* pnode, vNodes) {
+                if (!(pnode->nServices & NODE_REPLACE_BY_FEE))
+                    nNonReplaceByFeeConnections++;
+            }
+
+            // Reserve 1/4th of our incoming connections for replace-by-fee nodes
+            if (nNonReplaceByFeeConnections > (nMaxConnections - (nMaxConnections / 4))) {
+                LogPrintf("reached quota of non-replace-by-fee nodes; disconnecting %s\n",
+                          pfrom->addr.ToString());
+                pfrom->fDisconnect = true;
+                return false;
+            }
+        }
+
         if (pfrom->nVersion == 10300)
             pfrom->nVersion = 300;
         if (!vRecv.empty())
