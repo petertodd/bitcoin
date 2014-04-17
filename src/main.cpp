@@ -903,34 +903,40 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
                                  REJECT_DUPLICATE, "bad-txns-inputs-spent");
 
         // While we have the mempool locked determine total fees and size
-        // of conflicting transactions. We do this now as sptxConflicts
-        // contains pointers to transactions in the pool that may be made after
-        // the lock is released.
+        // of conflicting transactions.
 
+        // Populate set with conflicting transactions we're directly
+        // double-spending.
         set<const CTransaction *> sptxConflicts;
         BOOST_FOREACH(const CTxIn txin, tx.vin) {
             if (pool.mapNextTx.count(txin.prevout))
                 sptxConflicts.insert(pool.mapNextTx[txin.prevout].ptx);
         }
 
-        BOOST_FOREACH(const CTransaction *ptxConflicting, sptxConflicts) {
-            // If a in-memory transaction has further transactions that spend
-            // its outputs, don't replace it. Doing so without recursive fee
-            // evaluation would allow for a DoS attack by creating long
-            // transaction chains, then replacing the whole chain with just a
-            // single transaction - the subsequent transactions in the chain
-            // haven't paid for the network bandwidth they consumed.
-            uint256 hashConflicting = ptxConflicting->GetHash();
-            for (unsigned int i = 0; i < ptxConflicting->vout.size(); i++)
-            {
-                if (pool.mapNextTx.count(COutPoint(hashConflicting, i)))
-                    return state.Invalid(error("AcceptToMemoryPool : outputs of conflicting tx already spent; can't replace with %s",
-                                               hash.ToString()),
-                                         REJECT_DUPLICATE, "bad-txns-inputs-spent");
-            }
+        while (sptxConflicts.size())
+        {
+            std::set<const CTransaction *>::iterator it;
+            it = sptxConflicts.begin();
+            const CTransaction *ptxConflicting = *it;
+            sptxConflicts.erase(it);
 
             nConflictingFees += view.GetValueIn(*ptxConflicting) - ptxConflicting->GetValueOut();
             nConflictingSize += ::GetSerializeSize(*ptxConflicting, SER_NETWORK, PROTOCOL_VERSION);
+
+            // Limit DoS potential by simply rejecting large double-spends
+            if (nConflictingSize > MAX_STANDARD_TX_SIZE * 2)
+                return state.Invalid(error("AcceptToMemoryPool : too many conflicting txs for replacement; can't replace with %s",
+                                           hash.ToString()),
+                                     REJECT_DUPLICATE, "bad-txns-inputs-spent");
+
+            // Add children
+            uint256 hashConflicting = ptxConflicting->GetHash();
+            for (unsigned int i = 0; i < ptxConflicting->vout.size(); i++)
+            {
+                COutPoint outpoint(hashConflicting, i);
+                if (pool.mapNextTx.count(outpoint))
+                    sptxConflicts.insert(pool.mapNextTx[outpoint].ptx);
+            }
         }
 
         // Bring the best block into scope
