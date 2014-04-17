@@ -992,20 +992,35 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
                          hash.ToString(),
                          nFees, CTransaction::nMinRelayTxFee * 10000);
 
-
         // If there are conflicting transactions, determine if replacing them
-        // would be economically rational.
-        if (nConflictingFees > 0)
+        // would be economically rational. In theory this would be simply "pays
+        // more fees-per-KB" than conflicting modulo possible total fee
+        // reductions, but we have to think about DoS attacks too.
+        if (nConflictingSize > 0)
         {
-            // Don't allow the transaction at all unless it adds fees by at
-            // least CTransaction::nMinRelayTxFee per KB of data it broadcasts
-            // on the network.
+            // First of all we can't allow a replacement unless it pays greater
+            // fees than the transactions it conflicts with - if we did the
+            // bandwidth used by those conflicting transactions would not be
+            // paid for.
+            if (nFees < nConflictingFees)
+                return state.DoS(0,
+                    error("AcceptToMemoryPool : rejecting replacement %s, pays less fees than conflicting txs; %s < %s",
+                          hash.ToString(),
+                          FormatMoney(nFees),
+                          FormatMoney(nConflictingFees)),
+                    REJECT_INSUFFICIENTFEE, "insufficient fee");
+
+            // Secondly in addition to paying more fees than the conflicts the
+            // new transaction must additionally pay for its own bandwidth.
             int64_t nDeltaFees = nFees - nConflictingFees;
             int64_t nRelayFee = (int64_t)((double)nSize/1000 * CTransaction::nMinRelayTxFee);
             if (nDeltaFees < nRelayFee)
-                return state.DoS(0, error("AcceptToMemoryPool : rejecting replacement %s, not enough additional fees to relay; %d < %d",
-                                          hash.ToString(), nDeltaFees, nRelayFee),
-                                 REJECT_INSUFFICIENTFEE, "insufficient fee");
+                return state.DoS(0,
+                    error("AcceptToMemoryPool : rejecting replacement %s, not enough additional fees to relay; %s < %s",
+                          hash.ToString(),
+                          FormatMoney(nDeltaFees),
+                          FormatMoney(nRelayFee)),
+                    REJECT_INSUFFICIENTFEE, "insufficient fee");
 
             // Replace only if new fees-per-kb is > previous fees-per-kb.
             double dOldFeesPerKB = (double)nConflictingFees/((double)nConflictingSize/1000);
