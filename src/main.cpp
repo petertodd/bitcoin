@@ -913,6 +913,43 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
             return state.Invalid(error("AcceptToMemoryPool : inputs already spent"),
                                  REJECT_DUPLICATE, "bad-txns-inputs-spent");
 
+        // While we have the mempool locked determine total fees and size
+        // of conflicting transactions.
+
+        // Populate set with conflicting transactions we're directly
+        // double-spending.
+        set<const CTransaction *> sptxConflicts;
+        BOOST_FOREACH(const CTxIn txin, tx.vin) {
+            if (pool.mapNextTx.count(txin.prevout))
+                sptxConflicts.insert(pool.mapNextTx[txin.prevout].ptx);
+        }
+
+        while (sptxConflicts.size())
+        {
+            std::set<const CTransaction *>::iterator it;
+            it = sptxConflicts.begin();
+            const CTransaction *ptxConflicting = *it;
+            sptxConflicts.erase(it);
+
+            nConflictingFees += view.GetValueIn(*ptxConflicting) - ptxConflicting->GetValueOut();
+            nConflictingSize += ::GetSerializeSize(*ptxConflicting, SER_NETWORK, PROTOCOL_VERSION);
+
+            // Limit DoS potential by simply rejecting large double-spends
+            if (nConflictingSize > MAX_STANDARD_TX_SIZE * 2)
+                return state.Invalid(error("AcceptToMemoryPool : too many conflicting txs for replacement; can't replace with %s",
+                                           hash.ToString()),
+                                     REJECT_DUPLICATE, "bad-txns-inputs-spent");
+
+            // Add children
+            uint256 hashConflicting = ptxConflicting->GetHash();
+            for (unsigned int i = 0; i < ptxConflicting->vout.size(); i++)
+            {
+                COutPoint outpoint(hashConflicting, i);
+                if (pool.mapNextTx.count(outpoint))
+                    sptxConflicts.insert(pool.mapNextTx[outpoint].ptx);
+            }
+        }
+
         // Bring the best block into scope
         view.GetBestBlock();
 
