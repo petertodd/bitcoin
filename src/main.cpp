@@ -107,13 +107,6 @@ bool static GetTransaction(const uint256& hashTx, CWalletTx& wtx)
     return false;
 }
 
-// erases transaction with the given hash from all wallets
-void static EraseFromWallets(uint256 hash)
-{
-    BOOST_FOREACH(CWallet* pwallet, setpwalletRegistered)
-        pwallet->EraseFromWallet(hash);
-}
-
 // make sure all wallets know about the given transaction, in the given block
 void SyncWithWallets(const uint256 &hash, const CTransaction& tx, const CBlock* pblock, bool fUpdate)
 {
@@ -685,33 +678,10 @@ bool CTxMemPool::accept(CValidationState &state, CTransaction &tx, bool fCheckIn
             return false;
     }
 
-    // Check for conflicts with in-memory transactions
-    CTransaction* ptxOld = NULL;
-    for (unsigned int i = 0; i < tx.vin.size(); i++)
-    {
-        COutPoint outpoint = tx.vin[i].prevout;
-        if (mapNextTx.count(outpoint))
-        {
-            // Disable replacement feature for now
-            return false;
-
-            // Allow replacing with a newer version of the same transaction
-            if (i != 0)
-                return false;
-            ptxOld = mapNextTx[outpoint].ptx;
-            if (ptxOld->IsFinal())
-                return false;
-            if (!tx.IsNewerThan(*ptxOld))
-                return false;
-            for (unsigned int i = 0; i < tx.vin.size(); i++)
-            {
-                COutPoint outpoint = tx.vin[i].prevout;
-                if (!mapNextTx.count(outpoint) || mapNextTx[outpoint].ptx != ptxOld)
-                    return false;
-            }
-            break;
-        }
-    }
+    int64 nFees = 0;
+    unsigned int nSize = 0;
+    int64 nConflictingFees = 0;
+    unsigned int nConflictingSize = 0;
 
     if (fCheckInputs)
     {
@@ -742,6 +712,42 @@ bool CTxMemPool::accept(CValidationState &state, CTransaction &tx, bool fCheckIn
         if (!tx.HaveInputs(view))
             return state.Invalid(error("CTxMemPool::accept() : inputs already spent"));
 
+        // While we have the mempool locked determine total fees and size
+        // of conflicting transactions.
+
+        // Populate set with conflicting transactions we're directly
+        // double-spending.
+        set<const CTransaction *> sptxConflicts;
+        BOOST_FOREACH(const CTxIn txin, tx.vin) {
+            if (mapNextTx.count(txin.prevout))
+                sptxConflicts.insert(mapNextTx[txin.prevout].ptx);
+        }
+
+        while (sptxConflicts.size())
+        {
+            std::set<const CTransaction *>::iterator it;
+            it = sptxConflicts.begin();
+            const CTransaction *ptxConflicting = *it;
+            sptxConflicts.erase(it);
+
+            nConflictingFees += ptxConflicting->GetValueIn(view) - ptxConflicting->GetValueOut();
+            nConflictingSize += ::GetSerializeSize(*ptxConflicting, SER_NETWORK, PROTOCOL_VERSION);
+
+            // Limit DoS potential by simply rejecting large double-spends
+            if (nConflictingSize > MAX_STANDARD_TX_SIZE * 2)
+                return state.Invalid(error("AcceptToMemoryPool : too many conflicting txs for replacement; can't replace with %s",
+                                           hash.ToString().c_str()));
+
+            // Add children
+            uint256 hashConflicting = ptxConflicting->GetHash();
+            for (unsigned int i = 0; i < ptxConflicting->vout.size(); i++)
+            {
+                COutPoint outpoint(hashConflicting, i);
+                if (mapNextTx.count(outpoint))
+                    sptxConflicts.insert(mapNextTx[outpoint].ptx);
+            }
+        }
+
         // Bring the best block into scope
         view.GetBestBlock();
 
@@ -757,8 +763,8 @@ bool CTxMemPool::accept(CValidationState &state, CTransaction &tx, bool fCheckIn
         // you should add code here to check that the transaction does a
         // reasonable number of ECDSA signature verifications.
 
-        int64 nFees = tx.GetValueIn(view)-tx.GetValueOut();
-        unsigned int nSize = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
+        nFees = tx.GetValueIn(view)-tx.GetValueOut();
+        nSize = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
 
         // Don't accept it if it can't get into a block
         int64 txMinFee = tx.GetMinFee(1000, true, GMF_RELAY);
@@ -790,6 +796,42 @@ bool CTxMemPool::accept(CValidationState &state, CTransaction &tx, bool fCheckIn
             dFreeCount += nSize;
         }
 
+        // If there are conflicting transactions, determine if replacing them
+        // would be economically rational. In theory this would be simply "pays
+        // more fees-per-KB" than conflicting modulo possible total fee
+        // reductions, but we have to think about DoS attacks too.
+        if (nConflictingSize > 0)
+        {
+            // First of all we can't allow a replacement unless it pays greater
+            // fees than the transactions it conflicts with - if we did the
+            // bandwidth used by those conflicting transactions would not be
+            // paid for.
+            if (nFees < nConflictingFees)
+                return state.DoS(0,
+                    error("AcceptToMemoryPool : rejecting replacement %s, pays less fees than conflicting txs; %s < %s",
+                          hash.ToString().c_str(),
+                          FormatMoney(nFees).c_str(),
+                          FormatMoney(nConflictingFees).c_str()));
+
+            // Secondly in addition to paying more fees than the conflicts the
+            // new transaction must additionally pay for its own bandwidth.
+            int64 nDeltaFees = nFees - nConflictingFees;
+            int64 nRelayFee = (int64)((double)nSize/1000 * CTransaction::nMinRelayTxFee);
+            if (nDeltaFees < nRelayFee)
+                return state.DoS(0,
+                    error("AcceptToMemoryPool : rejecting replacement %s, not enough additional fees to relay; %s < %s",
+                          hash.ToString().c_str(),
+                          FormatMoney(nDeltaFees).c_str(),
+                          FormatMoney(nRelayFee).c_str()));
+
+            // Replace only if new fees-per-kb is > previous fees-per-kb.
+            double dOldFeesPerKB = (double)nConflictingFees/((double)nConflictingSize/1000);
+            double dNewFeesPerKB = (double)nFees/((double)nSize/1000);
+            if (dOldFeesPerKB > dNewFeesPerKB)
+                return state.DoS(0, error("AcceptToMemoryPool : rejecting uneconomical replacement %s; %f BTC/KB < %f BTC/KB",
+                                          hash.ToString().c_str(), dNewFeesPerKB/COIN, dOldFeesPerKB/COIN));
+        }
+
         // Check against previous transactions
         // This is done last to help prevent CPU exhaustion denial-of-service attacks.
         if (!tx.CheckInputs(state, view, true, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC))
@@ -801,18 +843,26 @@ bool CTxMemPool::accept(CValidationState &state, CTransaction &tx, bool fCheckIn
     // Store transaction in memory
     {
         LOCK(cs);
-        if (ptxOld)
-        {
-            printf("CTxMemPool::accept() : replacing tx %s with new version\n", ptxOld->GetHash().ToString().c_str());
-            remove(*ptxOld);
-        }
+
+        // Remove conflicting transactions from the mempool
+        list<CTransaction> ltxConflicted;
+        mempool.removeConflicts(tx, ltxConflicted);
+
+        // Store transaction in memory
         addUnchecked(hash, tx);
+
+        BOOST_FOREACH(const CTransaction &txConflicted, ltxConflicted) {
+            printf("replacing tx %s with %s for %s BTC additional fees, %d delta bytes\n",
+                    txConflicted.GetHash().ToString().c_str(),
+                    hash.ToString().c_str(),
+                    FormatMoney(nFees - nConflictingFees).c_str(),
+                    (int)nSize - (int)nConflictingSize);
+
+            // Should tell wallets about transactions that were replaced here.
+        }
     }
 
     ///// are we sure this is ok when loading transactions or restoring block txes
-    // If updated, erase old tx from wallet
-    if (ptxOld)
-        EraseFromWallets(ptxOld->GetHash());
     SyncWithWallets(hash, tx, NULL, true);
 
     return true;
@@ -841,7 +891,7 @@ bool CTxMemPool::addUnchecked(const uint256& hash, const CTransaction &tx)
 }
 
 
-bool CTxMemPool::remove(const CTransaction &tx, bool fRecursive)
+bool CTxMemPool::remove(const CTransaction &tx, std::list<CTransaction>& removed, bool fRecursive)
 {
     // Remove transaction from memory pool
     {
@@ -851,11 +901,12 @@ bool CTxMemPool::remove(const CTransaction &tx, bool fRecursive)
             for (unsigned int i = 0; i < tx.vout.size(); i++) {
                 std::map<COutPoint, CInPoint>::iterator it = mapNextTx.find(COutPoint(hash, i));
                 if (it != mapNextTx.end())
-                    remove(*it->second.ptx, true);
+                    remove(*it->second.ptx, removed, true);
             }
         }
         if (mapTx.count(hash))
         {
+            removed.push_front(tx);
             BOOST_FOREACH(const CTxIn& txin, tx.vin)
                 mapNextTx.erase(txin.prevout);
             mapTx.erase(hash);
@@ -865,7 +916,7 @@ bool CTxMemPool::remove(const CTransaction &tx, bool fRecursive)
     return true;
 }
 
-bool CTxMemPool::removeConflicts(const CTransaction &tx)
+bool CTxMemPool::removeConflicts(const CTransaction &tx, std::list<CTransaction>& removed)
 {
     // Remove transactions which depend on inputs of tx, recursively
     LOCK(cs);
@@ -874,7 +925,7 @@ bool CTxMemPool::removeConflicts(const CTransaction &tx)
         if (it != mapNextTx.end()) {
             const CTransaction &txConflict = *it->second.ptx;
             if (txConflict != tx)
-                remove(txConflict, true);
+                remove(txConflict, removed, true);
         }
     }
     return true;
@@ -1867,15 +1918,18 @@ bool SetBestChain(CValidationState &state, CBlockIndex* pindexNew)
     // Resurrect memory transactions that were in the disconnected branch
     BOOST_FOREACH(CTransaction& tx, vResurrect) {
         // ignore validation errors in resurrected transactions
+        list<CTransaction> removed;
         CValidationState stateDummy;
         if (!tx.AcceptToMemoryPool(stateDummy, true, false))
-            mempool.remove(tx, true);
+            mempool.remove(tx, removed, true);
     }
 
     // Delete redundant memory transactions that are in the connected branch
+    list<CTransaction> txConflicted;
     BOOST_FOREACH(CTransaction& tx, vDelete) {
-        mempool.remove(tx);
-        mempool.removeConflicts(tx);
+        list<CTransaction> unused;
+        mempool.remove(tx, unused);
+        mempool.removeConflicts(tx, txConflicted);
     }
 
     // Update best block in wallet (so we can detect restored wallets)

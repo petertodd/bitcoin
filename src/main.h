@@ -2082,8 +2082,8 @@ public:
 
     bool accept(CValidationState &state, CTransaction &tx, bool fCheckInputs, bool fLimitFree, bool* pfMissingInputs);
     bool addUnchecked(const uint256& hash, const CTransaction &tx);
-    bool remove(const CTransaction &tx, bool fRecursive = false);
-    bool removeConflicts(const CTransaction &tx);
+    bool remove(const CTransaction &tx, std::list<CTransaction>& removed, bool fRecursive = false);
+    bool removeConflicts(const CTransaction &tx, std::list<CTransaction>& removed);
     void clear();
     void queryHashes(std::vector<uint256>& vtxid);
     void pruneSpent(const uint256& hash, CCoins &coins);
