@@ -766,6 +766,13 @@ bool CTxMemPool::accept(CValidationState &state, CTransaction &tx, bool fCheckIn
         nFees = tx.GetValueIn(view)-tx.GetValueOut();
         nSize = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
 
+        // Determine if the # of sigops used by the transaction is excessive
+        unsigned int nSigOps = tx.GetLegacySigOpCount();
+        nSigOps += tx.GetP2SHSigOpCount(view);
+        if (nSigOps > MAX_TX_SIGOPS)
+            return error("CTxMemPool::accept() : excessive sigops %s, %d > %d",
+                         hash.ToString().c_str(), nSigOps, MAX_TX_SIGOPS);
+
         // Don't accept it if it can't get into a block
         int64 txMinFee = tx.GetMinFee(1000, true, GMF_RELAY);
         if (fLimitFree && nFees < txMinFee)
