@@ -1416,26 +1416,122 @@ int ScriptSigArgsExpected(txnouttype t, const std::vector<std::vector<unsigned c
     return -1;
 }
 
-bool IsStandard(const CScript& scriptPubKey, txnouttype& whichType)
+bool HasSoftforkSafeOps(const CScript& script)
 {
-    vector<valtype> vSolutions;
-    if (!Solver(scriptPubKey, whichType, vSolutions))
-        return false;
-
-    if (whichType == TX_MULTISIG)
+    CScript::const_iterator pc = begin();
+    while (pc < script.end())
     {
-        unsigned char m = vSolutions.front()[0];
-        unsigned char n = vSolutions.back()[0];
-        // Support up to x-of-3 multisig txns as standard
-        if (n < 1 || n > 3)
-            return false;
-        if (m < 1 || m > n)
-            return false;
-    }
+        opcodetype opcode;
+        std::vector<unsigned char> data;
+        if (!script.GetOp(pc, opcode, data))
+            return false; // there's an invalid pushdata
 
-    return whichType != TX_NONSTANDARD;
+        if (opcode <= OP_PUSHDATA4)
+            continue;
+
+        switch (opcode)
+        {
+            // push value
+            case OP_1NEGATE:
+            case OP_1:
+            case OP_2:
+            case OP_3:
+            case OP_4:
+            case OP_5:
+            case OP_6:
+            case OP_7:
+            case OP_8:
+            case OP_9:
+            case OP_10:
+            case OP_11:
+            case OP_12:
+            case OP_13:
+            case OP_14:
+            case OP_15:
+            case OP_16:
+
+            // control
+            case OP_NOP:
+            case OP_IF:
+            case OP_NOTIF:
+            case OP_ELSE:
+            case OP_ENDIF:
+            case OP_VERIFY:
+            case OP_RETURN:
+
+            // stack ops
+            case OP_TOALTSTACK:
+            case OP_FROMALTSTACK:
+            case OP_2DROP:
+            case OP_2DUP:
+            case OP_3DUP:
+            case OP_2OVER:
+            case OP_2ROT:
+            case OP_2SWAP:
+            case OP_IFDUP:
+            case OP_DEPTH:
+            case OP_DROP:
+            case OP_DUP:
+            case OP_NIP:
+            case OP_OVER:
+            case OP_PICK:
+            case OP_ROLL:
+            case OP_ROT:
+            case OP_SWAP:
+            case OP_TUCK:
+
+            // splice ops
+            case OP_SIZE:
+
+            // bit logic
+            case OP_EQUAL:
+            case OP_EQUALVERIFY:
+
+            // numeric
+            case OP_1ADD:
+            case OP_1SUB:
+            case OP_NEGATE:
+            case OP_ABS:
+            case OP_NOT:
+            case OP_0NOTEQUAL:
+
+            case OP_ADD:
+            case OP_SUB:
+
+            case OP_BOOLAND:
+            case OP_BOOLOR:
+            case OP_NUMEQUAL:
+            case OP_NUMEQUALVERIFY:
+            case OP_NUMNOTEQUAL:
+            case OP_LESSTHAN:
+            case OP_GREATERTHAN:
+            case OP_LESSTHANOREQUAL:
+            case OP_GREATERTHANOREQUAL:
+            case OP_MIN:
+            case OP_MAX:
+
+            case OP_WITHIN:
+
+            // crypto
+            case OP_RIPEMD160:
+            case OP_SHA1:
+            case OP_SHA256:
+            case OP_HASH160:
+            case OP_HASH256:
+            case OP_CODESEPARATOR:
+            case OP_CHECKSIG:
+            case OP_CHECKSIGVERIFY:
+            case OP_CHECKMULTISIG:
+            case OP_CHECKMULTISIGVERIFY:
+                continue;
+
+            default:
+                return false;
+        }
+    };
+
+    return true;
 }
-
 
 unsigned int HaveKeys(const vector<valtype>& pubkeys, const CKeyStore& keystore)
 {

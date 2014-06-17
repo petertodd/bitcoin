@@ -79,7 +79,7 @@ static const unsigned char REJECT_MALFORMED = 0x01;
 static const unsigned char REJECT_INVALID = 0x10;
 static const unsigned char REJECT_OBSOLETE = 0x11;
 static const unsigned char REJECT_DUPLICATE = 0x12;
-static const unsigned char REJECT_NONSTANDARD = 0x40;
+static const unsigned char REJECT_NONSOFTFORKSAFE = 0x40;
 static const unsigned char REJECT_DUST = 0x41;
 static const unsigned char REJECT_INSUFFICIENTFEE = 0x42;
 static const unsigned char REJECT_CHECKPOINT = 0x43;
@@ -273,11 +273,11 @@ int64_t GetMinFee(const CTransaction& tx, unsigned int nBytes, bool fAllowFree, 
 //   DUP CHECKSIG DROP ... repeated 100 times... OP_1
 //
 
-/** Check for standard transaction types
+/** Check for softfork-safe inputs.
     @param[in] mapInputs    Map of previous transactions that have outputs we're spending
-    @return True if all inputs (scriptSigs) use only standard transaction forms
+    @return True if all inputs (scriptSigs) use only softfork-safe scripts
 */
-bool AreInputsStandard(const CTransaction& tx, CCoinsViewCache& mapInputs);
+bool AreInputsSoftforkSafe(const CTransaction& tx, CCoinsViewCache& mapInputs);
 
 /** Count ECDSA signature operations the old-fashioned (pre-0.6) way
     @return number of sigops this transaction's outputs will produce when spent
