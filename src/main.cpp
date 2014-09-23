@@ -888,6 +888,9 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
         CCoinsView dummy;
         CCoinsViewCache view(dummy);
 
+        int64_t nConflictingFees = 0;
+        unsigned int nConflictingSize = 0;
+
         {
         LOCK(pool.cs);
         CCoinsViewMemPool viewMemPool(*pcoinsTip, pool);
@@ -1054,6 +1057,11 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
         {
             return error("AcceptToMemoryPool: : ConnectInputs failed %s", hash.ToString());
         }
+
+        // Remove conflicting transactions from the mempool
+        list<CTransaction> ltxConflicted;
+        mempool.removeConflicts(tx, ltxConflicted);
+
         // Store transaction in memory
         pool.addUnchecked(hash, entry);
 
