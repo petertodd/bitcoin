@@ -1653,6 +1653,16 @@ bool ConnectBlock(CBlock& block, CValidationState& state, CBlockIndex* pindex, C
     unsigned int flags = SCRIPT_VERIFY_NOCACHE |
                          (fStrictPayToScriptHash ? SCRIPT_VERIFY_P2SH : SCRIPT_VERIFY_NONE);
 
+    // NOP2 is redefined as CHECKLOCKTIMEVERIFY in blocks with nVersion >= 3
+    //
+    // However the block.nVersion=3 rule is not enforced until 750 of the last
+    // 1,000 blocks are version 3 or greater (51/100 if testnet):
+    if (block.nVersion >= 3 &&
+        CBlockIndex::IsSuperMajority(3, pindex->pprev, Params().EnforceBlockUpgradeMajority()))
+    {
+        flags |= SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
+    }
+
     CBlockUndo blockundo;
 
     CCheckQueueControl<CScriptCheck> control(fScriptChecks && nScriptCheckThreads ? &scriptcheckqueue : NULL);
@@ -2381,6 +2391,14 @@ bool AcceptBlockHeader(CBlockHeader& block, CValidationState& state, CBlockIndex
             CBlockIndex::IsSuperMajority(2, pindexPrev, Params().RejectBlockOutdatedMajority()))
         {
             return state.Invalid(error("AcceptBlock() : rejected nVersion=1 block"),
+                                 REJECT_OBSOLETE, "bad-version");
+        }
+
+        // Reject block.nVersion=2 blocks when 95% (75% on testnet) of the network has upgraded:
+        if (block.nVersion < 3 &&
+            CBlockIndex::IsSuperMajority(3, pindexPrev, Params().RejectBlockOutdatedMajority()))
+        {
+            return state.Invalid(error("AcceptBlock() : rejected nVersion=2 block"),
                                  REJECT_OBSOLETE, "bad-version");
         }
     }
