@@ -40,6 +40,7 @@ unsigned int ParseScriptFlags(string strFlags){
         mapFlagNames["STRICTENC"] = SCRIPT_VERIFY_STRICTENC;
         mapFlagNames["LOW_S"] = SCRIPT_VERIFY_LOW_S;
         mapFlagNames["NULLDUMMY"] = SCRIPT_VERIFY_NULLDUMMY;
+        mapFlagNames["CHECKLOCKTIMEVERIFY"] = SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
     }
 
     BOOST_FOREACH(string word, words)
