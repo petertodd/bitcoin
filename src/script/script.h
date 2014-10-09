@@ -185,10 +185,14 @@ public:
         m_value = n;
     }
 
-    explicit CScriptNum(const std::vector<unsigned char>& vch)
+    explicit CScriptNum(const std::vector<unsigned char>& vch, bool fRequireMinimal)
     {
-        if (vch.size() > nMaxNumSize)
-            throw scriptnum_error("CScriptNum(const std::vector<unsigned char>&) : overflow");
+        if (vch.size() > nMaxNumSize) {
+            throw scriptnum_error("script number overflow");
+        }
+        if (fRequireMinimal && vch.size() > 0 && (vch.back() & 0x7f) == 0 && (vch.size() <= 1 || (vch[vch.size() - 2] & 0x80) == 0)) {
+            throw scriptnum_error("non-minimally encoded script number");
+        }
         m_value = set_vch(vch);
     }
 
@@ -315,7 +319,7 @@ private:
 inline std::string ValueString(const std::vector<unsigned char>& vch)
 {
     if (vch.size() <= 4)
-        return strprintf("%d", CScriptNum(vch).getint());
+        return strprintf("%d", CScriptNum(vch, false).getint());
     else
         return HexStr(vch);
 }
@@ -329,6 +333,10 @@ protected:
         if (n == -1 || (n >= 1 && n <= 16))
         {
             push_back(n + (OP_1 - 1));
+        }
+        else if (n == 0)
+        {
+            push_back(OP_0);
         }
         else
         {
@@ -576,9 +584,6 @@ public:
 
     // Called by IsStandardTx and P2SH/BIP62 VerifyScript (which makes it consensus-critical).
     bool IsPushOnly() const;
-
-    // Called by IsStandardTx.
-    bool HasCanonicalPushes() const;
 
     // Returns whether the script is guaranteed to fail at execution,
     // regardless of the initial stack. This allows outputs to be pruned
