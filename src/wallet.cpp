@@ -1365,7 +1365,7 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64_t> >& vecSend,
     // e.g. high-latency mix networks and some CoinJoin implementations, have
     // better privacy.
     if (GetRandInt(10) == 0)
-        txNew.nLockTime = std::max(0, txNew.nLockTime - GetRandInt(100));
+        txNew.nLockTime = std::max(0U, txNew.nLockTime - GetRandInt(100));
 
     {
         LOCK2(cs_main, cs_wallet);
