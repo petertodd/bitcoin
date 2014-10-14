@@ -176,7 +176,15 @@ bool static CheckMinimalPush(const valtype& data, opcodetype opcode) {
         // Could have used OP_PUSHDATA2.
         return opcode == OP_PUSHDATA2;
     }
-    return true;
+
+    // If we reach this point the PUSHDATA can only be represented by
+    // OP_PUSHDATA4, and only if the size is representable in 4 bytes.
+    // (although due to the size limitations the script is invalid if executed)
+    if (opcode == OP_PUSHDATA4 && data.size() <= 4294967295)
+        return true;
+
+    // If the above isn't true, then the push is completely invalid.
+    throw runtime_error("CheckMinimalPush() : invalid push");
 }
 
 bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, unsigned int flags, const BaseSignatureChecker& checker)
