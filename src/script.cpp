@@ -1913,6 +1913,13 @@ bool CScript::IsBlacklisted() const
             this->at(5) == 0x32)
             return true;
 
+    //1Luc* - lucky bit spam
+    else if(this->at(3) == 0xda &&
+            this->at(4) == 0x5d &&
+            this->at(5) == 0xde)
+            return true;
+
+
     // 1dice* spam
     return (this->at(3) == 0x06 &&
             this->at(4) == 0xf1 &&
