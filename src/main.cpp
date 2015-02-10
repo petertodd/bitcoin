@@ -958,20 +958,6 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
     if (pool.exists(hash))
         return false;
 
-    // Check for conflicts with in-memory transactions
-    {
-    LOCK(pool.cs); // protect pool.mapNextTx
-    for (unsigned int i = 0; i < tx.vin.size(); i++)
-    {
-        COutPoint outpoint = tx.vin[i].prevout;
-        if (pool.mapNextTx.count(outpoint))
-        {
-            // Disable replacement feature for now
-            return false;
-        }
-    }
-    }
-
     {
         CCoinsView dummy;
         CCoinsViewCache view(&dummy);
@@ -1097,8 +1083,119 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
             return error("AcceptToMemoryPool: : BUG! PLEASE REPORT THIS! ConnectInputs failed against MANDATORY but not STANDARD flags %s", hash.ToString());
         }
 
+        CAmount nConflictingFees = 0;
+        size_t nConflictingSize = 0;
+        {
+
+            // Now that we're sure we'd let the transaction into the mempool if not
+            // for conflicts, check if it's economically rational to mine it rather
+            // than the transactions it conflicts with. (if any)
+            LOCK(pool.cs);
+            set<uint256> sConflicts;
+
+            // Start with set of conflicting transactions we're directly
+            // double-spending.
+            BOOST_FOREACH(const CTxIn txin, tx.vin) {
+                if (pool.mapNextTx.count(txin.prevout))
+                {
+                    sConflicts.insert(pool.mapNextTx[txin.prevout].ptx->GetHash());
+                }
+            }
+
+            // Sum up conflicting size/fees for that set and all children.
+            int nTxVisited = 0;
+            while (sConflicts.size())
+            {
+                // Limit DoS potential by simply rejecting double-spends of large
+                // numbers of transactions. This can be removed when the
+                // mempool itself is limited in size - as we're just following
+                // pointers and nFees and nSize are cached this operation is
+                // very fast even with extremely large amounts of transactions
+                // changed.
+                nTxVisited++;
+                if (nTxVisited > 100)
+                {
+                    return state.DoS(0, error("AcceptToMemoryPool : too many conflicting txs for replacement; can't replace with %s",
+                                               hash.ToString()),
+                                         REJECT_DUPLICATE, "bad-txns-inputs-spent");
+                }
+
+                std::set<uint256>::iterator it;
+                it = sConflicts.begin();
+                uint256 hashChildTx = *it;
+                sConflicts.erase(it);
+
+                const CTxMemPoolEntry& entry = pool.mapTx.at(hashChildTx);
+                nConflictingFees += entry.GetFee();
+                nConflictingSize += entry.GetTxSize();
+
+                // Add tx children to the set
+                for (unsigned int i = 0; i < entry.GetTx().vout.size(); i++)
+                {
+                    COutPoint outpoint(hashChildTx, i);
+                    if (pool.mapNextTx.count(outpoint))
+                    {
+                        sConflicts.insert(pool.mapNextTx[outpoint].ptx->GetHash());
+                    }
+                }
+            }
+
+            // Replace?
+            //
+            // First of all we can't allow a replacement unless it pays greater
+            // fees than the transactions it conflicts with - if we did the
+            // bandwidth used by those conflicting transactions would not be
+            // paid for.
+            if (nFees < nConflictingFees)
+            {
+                return state.DoS(0, error("AcceptToMemoryPool : rejecting replacement %s, less fees than conflicting txs; %s < %s",
+                                          hash.ToString(), FormatMoney(nFees), FormatMoney(nConflictingFees)),
+                                 REJECT_INSUFFICIENTFEE, "insufficient fee");
+            }
+
+            // Secondly in addition to paying more fees than the conflicts the
+            // new transaction must additionally pay for its own bandwidth.
+            CAmount nDeltaFees = nFees - nConflictingFees;
+            if (nDeltaFees < ::minRelayTxFee.GetFee(nSize))
+            {
+                return state.DoS(0,
+                        error("AcceptToMemoryPool : rejecting replacement %s, not enough additional fees to relay; %s < %s",
+                              hash.ToString(),
+                              FormatMoney(nDeltaFees),
+                              FormatMoney(txMinFee)),
+                        REJECT_INSUFFICIENTFEE, "insufficient fee");
+            }
+
+            // Finally replace only if we end up with a larger fees-per-kb than
+            // the replacements.
+            CFeeRate oldFeeRate(nConflictingFees, nConflictingSize);
+            CFeeRate newFeeRate(nFees, nSize);
+            if (newFeeRate <= oldFeeRate)
+            {
+                return state.DoS(0,
+                        error("AcceptToMemoryPool : rejecting replacement %s; new fee %s <= old fee %s",
+                              hash.ToString(),
+                              newFeeRate.ToString(),
+                              oldFeeRate.ToString()),
+                        REJECT_INSUFFICIENTFEE, "insufficient fee");
+            }
+        }
+
+        // Remove conflicting transactions from the mempool
+        list<CTransaction> ltxConflicted;
+        pool.removeConflicts(tx, ltxConflicted);
+
         // Store transaction in memory
         pool.addUnchecked(hash, entry);
+
+        BOOST_FOREACH(const CTransaction &txConflicted, ltxConflicted)
+        {
+            LogPrint("mempool", "replacing tx %s with %s for %s BTC additional fees, %d delta bytes\n",
+                     txConflicted.GetHash().ToString(),
+                     hash.ToString(),
+                     FormatMoney(nFees - nConflictingFees),
+                     (int)nSize - (int)nConflictingSize);
+        }
     }
 
     SyncWithWallets(tx, NULL);
