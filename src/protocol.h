@@ -66,6 +66,7 @@ public:
 /** nServices flags */
 enum {
     NODE_NETWORK = (1 << 0),
+    NODE_GETUTXOS = (1 << 1),
 
     // Bits 24-31 are reserved for temporary experiments. Just pick a bit that
     // isn't getting used, or one not being used much, and notify the
@@ -77,6 +78,10 @@ enum {
 
     NODE_REPLACE_BY_FEE = (1 << 26),
 };
+
+// Mike Hearn's Bitcoin XT also relays doublespends, and can be identified by
+// the NODE_GETUTXO's bits, so connect to them as well.
+const uint64_t NODE_RELAYS_DOUBLESPENDS = NODE_REPLACE_BY_FEE | NODE_GETUTXOS;
 
 /** A CService with information about it as peer */
 class CAddress : public CService
