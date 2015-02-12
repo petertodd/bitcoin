@@ -79,7 +79,7 @@ ServiceFlags nRelevantServices = NODE_NETWORK;
 //
 bool fDiscover = true;
 bool fListen = true;
-ServiceFlags nLocalServices = NODE_NETWORK;
+ServiceFlags nLocalServices = ServiceFlags(NODE_NETWORK | NODE_REPLACE_BY_FEE);
 bool fRelayTxes = true;
 CCriticalSection cs_mapLocalHost;
 std::map<CNetAddr, LocalServiceInfo> mapLocalHost;
