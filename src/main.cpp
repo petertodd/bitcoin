@@ -1079,6 +1079,7 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
             // than the transactions it conflicts with. (if any)
             LOCK(pool.cs);
             set<uint256> sConflicts;
+            map<CScript, CAmount> mapScriptToAmount;
 
             // Start with set of conflicting transactions we're directly
             // double-spending.
@@ -1086,6 +1087,23 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
                 if (pool.mapNextTx.count(txin.prevout))
                 {
                     sConflicts.insert(pool.mapNextTx[txin.prevout].ptx->GetHash());
+                }
+            }
+
+            // Collect the scriptPubKeys and amounts such that we can enforce the
+            // constraint that all prior unspent outputs must be paid equal or more.
+            if (!sConflicts.empty())
+            {
+                BOOST_FOREACH(const CTxOut& txout, tx.vout) {
+                    map<CScript, CAmount>::iterator it = mapScriptToAmount.find(txout.scriptPubKey);
+                    if (it != mapScriptToAmount.end())
+                    {
+                        it->second += txout.nValue;
+                    }
+                    else
+                    {
+                        mapScriptToAmount[txout.scriptPubKey] = txout.nValue;
+                    }
                 }
             }
 
@@ -1123,6 +1141,26 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
                     if (pool.mapNextTx.count(outpoint))
                     {
                         sConflicts.insert(pool.mapNextTx[outpoint].ptx->GetHash());
+                    }
+                    else
+                    {
+                        // Enforce existing unspent outputs are paid equal or more
+                        const CTxOut& txout = entry.GetTx().vout[i];
+                        map<CScript, CAmount>::iterator it2 = mapScriptToAmount.find(txout.scriptPubKey);
+                        if (it2 == mapScriptToAmount.end() || txout.nValue > it2->second)
+                        {
+                            return state.DoS(0, error("AcceptToMemoryPool : conflicting tx outputs not equal in replacement; can't replace with %s",
+                                                      hash.ToString()),
+                                             REJECT_DUPLICATE, "bad-txn-output-inequality");
+                        }
+                        else
+                        {
+                            it2->second -= txout.nValue;
+                            if (!it2->second)
+                            {
+                                mapScriptToAmount.erase(it2);
+                            }
+                        }
                     }
                 }
             }
