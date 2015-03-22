@@ -76,19 +76,33 @@ class Test_ReplaceByFee(unittest.TestCase):
         tx1a_txid = self.proxy.sendrawtransaction(tx1a, True)
 
         # Should fail because we haven't changed the fee
-        tx1b = CTransaction([CTxIn(tx0_outpoint)],
-                            [CTxOut(1*COIN, CScript([b'b']))])
+        tx0b_outpoint = self.make_txout(0.1*COIN)
+        tx1b = CTransaction([CTxIn(tx0_outpoint), CTxIn(tx0b_outpoint)],
+                            [CTxOut(1.1*COIN, CScript([b'a']))])
 
         try:
             tx1b_txid = self.proxy.sendrawtransaction(tx1b, True)
         except bitcoin.rpc.JSONRPCException as exp:
-            self.assertEqual(exp.error['code'], -26) # insufficient fee
+            self.assertEqual(exp.error['code'], -26) # RPC_VERIFY_REJECTED
         else:
             self.fail()
 
-        # Extra 0.1 BTC fee
+        # Should fail because 'a' isn't being paid out the same amount
+        # even though we've added more fee.
         tx1b = CTransaction([CTxIn(tx0_outpoint)],
-                            [CTxOut(0.9*COIN, CScript([b'b']))])
+                            [CTxOut(0.9*COIN, CScript([b'a']))])
+        try:
+            tx1b_txid = self.proxy.sendrawtransaction(tx1b, True)
+        except bitcoin.rpc.JSONRPCException as exp:
+            self.assertEqual(exp.error['code'], -26) # RPC_VERIFY_REJECTED
+        else:
+            self.fail()
+
+        # Extra 0.1 BTC fee from new input and 'a' is being paid out the
+        # same amount.
+        tx1b = CTransaction([CTxIn(tx0_outpoint), CTxIn(tx0b_outpoint)],
+                            [CTxOut(1*COIN, CScript([b'a']))])
+
         tx1b_txid = self.proxy.sendrawtransaction(tx1b, True)
 
         # tx1a is in fact replaced
@@ -122,13 +136,26 @@ class Test_ReplaceByFee(unittest.TestCase):
         try:
             self.proxy.sendrawtransaction(dbl_tx, True)
         except bitcoin.rpc.JSONRPCException as exp:
-            self.assertEqual(exp.error['code'], -26) # insufficient fee
+            self.assertEqual(exp.error['code'], -26) # RPC_VERIFY_REJECTED
         else:
             self.fail()
 
-        # Accepted with sufficient fee
+        # Rejected as '1' isn't being paid equal or better.
         dbl_tx = CTransaction([CTxIn(tx0_outpoint)],
                               [CTxOut(1*COIN, CScript([1]))])
+
+        try:
+            self.proxy.sendrawtransaction(dbl_tx, True)
+        except bitcoin.rpc.JSONRPCException as exp:
+            self.assertEqual(exp.error['code'], -26) # RPC_VERIFY_REJECTED
+        else:
+            self.fail()
+
+        # Accepted with sufficient fee and '1' still being paid 10 BTC.
+        tx0b_outpoint = self.make_txout(initial_nValue)
+        dbl_tx = CTransaction([CTxIn(tx0_outpoint), CTxIn(tx0b_outpoint)],
+                              [CTxOut(10*COIN, CScript([1]))])
+
         self.proxy.sendrawtransaction(dbl_tx, True)
 
         for doublespent_txid in chain_txids:
@@ -139,9 +166,13 @@ class Test_ReplaceByFee(unittest.TestCase):
         """Doublespend of a big tree of transactions"""
 
         initial_nValue = 50*COIN
+        default_tree_width = 5
         tx0_outpoint = self.make_txout(initial_nValue)
 
-        def branch(prevout, initial_value, max_txs, *, tree_width=5, fee=0.0001*COIN, _total_txs=None):
+        # Record the aggregate unspent amounts paid out per recipient.
+        amounts = {i+1: 0 for i in range(default_tree_width)}
+
+        def branch(prevout, initial_value, max_txs, *, tree_width=default_tree_width, fee=0.0001*COIN, _total_txs=None):
             if _total_txs is None:
                 _total_txs = [0]
             if _total_txs[0] >= max_txs:
@@ -151,10 +182,16 @@ class Test_ReplaceByFee(unittest.TestCase):
             if txout_value < fee:
                 return
 
+            if initial_value < initial_nValue:
+                amounts[prevout.n+1] -= initial_value
+
             vout = [CTxOut(txout_value, CScript([i+1]))
                     for i in range(tree_width)]
             tx = CTransaction([CTxIn(prevout)],
                               vout)
+
+            for i in range(tree_width):
+                amounts[i+1] += txout_value
 
             self.assertTrue(len(tx.serialize()) < 100000)
             txid = self.proxy.sendrawtransaction(tx, True)
@@ -173,18 +210,35 @@ class Test_ReplaceByFee(unittest.TestCase):
         self.assertEqual(len(tree_txs), n)
 
         # Attempt double-spend, will fail because too little fee paid
-        dbl_tx = CTransaction([CTxIn(tx0_outpoint)],
-                              [CTxOut(initial_nValue - fee*n, CScript([1]))])
+        tx0b_outpoint = self.make_txout(1*COIN)
+        vout = [CTxOut(amounts[i+1], CScript([i+1]))
+                for i in range(default_tree_width)]
+        vout.append(CTxOut(1*COIN, CScript([1])))
+        dbl_tx = CTransaction([CTxIn(tx0_outpoint), CTxIn(tx0b_outpoint)],
+                              vout)
         try:
             self.proxy.sendrawtransaction(dbl_tx, True)
         except bitcoin.rpc.JSONRPCException as exp:
-            self.assertEqual(exp.error['code'], -26) # insufficient fee
+            self.assertEqual(exp.error['code'], -26) # RPC_VERIFY_REJECTED
         else:
             self.fail()
 
-        # 1 BTC fee is enough
+        # 1 BTC isn't enough because existing outputs aren't paid out equally.
         dbl_tx = CTransaction([CTxIn(tx0_outpoint)],
                               [CTxOut(initial_nValue - fee*n - 1*COIN, CScript([1]))])
+        try:
+            self.proxy.sendrawtransaction(dbl_tx, True)
+        except bitcoin.rpc.JSONRPCException as exp:
+            self.assertEqual(exp.error['code'], -26) # RPC_VERIFY_REJECTED
+        else:
+            self.fail()
+
+        # 1 BTC is enough w/equal payouts
+        vout = [CTxOut(amounts[i+1], CScript([i+1]))
+                for i in range(default_tree_width)]
+        dbl_tx = CTransaction([CTxIn(tx0_outpoint), CTxIn(tx0b_outpoint)],
+                              vout)
+
         self.proxy.sendrawtransaction(dbl_tx, True)
 
         for tx in tree_txs:
@@ -193,14 +247,20 @@ class Test_ReplaceByFee(unittest.TestCase):
 
         # Try again, but with more total transactions than the "max txs
         # double-spent at once" anti-DoS limit.
-        for n in (MAX_REPLACEMENT_LIMIT, MAX_REPLACEMENT_LIMIT*2):
+        for n in (MAX_REPLACEMENT_LIMIT+1, MAX_REPLACEMENT_LIMIT*2):
             fee = 0.0001*COIN
             tx0_outpoint = self.make_txout(initial_nValue)
+            for i in range(default_tree_width):
+                amounts[i+1] = 0
+
             tree_txs = list(branch(tx0_outpoint, initial_nValue, n, fee=fee))
             self.assertEqual(len(tree_txs), n)
 
-            dbl_tx = CTransaction([CTxIn(tx0_outpoint)],
-                                  [CTxOut(initial_nValue - fee*n, CScript([1]))])
+            tx0b_outpoint = self.make_txout(1*COIN)
+            vout = [CTxOut(amounts[i+1], CScript([i+1]))
+                    for i in range(default_tree_width)]
+            dbl_tx = CTransaction([CTxIn(tx0_outpoint), CTxIn(tx0b_outpoint)],
+                                  vout)
             try:
                 self.proxy.sendrawtransaction(dbl_tx, True)
             except bitcoin.rpc.JSONRPCException as exp:
@@ -225,7 +285,7 @@ class Test_ReplaceByFee(unittest.TestCase):
             prevout = tx0_outpoint
             prevout_nValue = initial_nValue
 
-            fat_txout = CTxOut(1, CScript([b'\xff'*999000]))
+            fat_txout = CTxOut(1, CScript([b'\xff'*99900]))
 
             for i in range(n):
                 tx = CTransaction([CTxIn(prevout)],
@@ -244,18 +304,33 @@ class Test_ReplaceByFee(unittest.TestCase):
         self.assertEqual(len(chain_txs), n)
 
         # Attempt double-spend, will fail because too little fee paid
-        dbl_tx = CTransaction([CTxIn(tx0_outpoint)],
-                              [CTxOut(2*COIN, CScript([1]))])
+        tx0b_outpoint = self.make_txout(1*COIN)
+        dbl_tx = CTransaction([CTxIn(tx0_outpoint), CTxIn(tx0b_outpoint)],
+                              [CTxOut(2*COIN, CScript([1])),
+                               CTxOut(100, CScript([b'\xff'*99900]))])
         try:
             self.proxy.sendrawtransaction(dbl_tx, True)
         except bitcoin.rpc.JSONRPCException as exp:
-            self.assertEqual(exp.error['code'], -26) # insufficient fee
+            self.assertEqual(exp.error['code'], -26) # RPC_VERIFY_REJECTED
         else:
             self.fail()
 
-        # Fine with more fees
-        dbl_tx = CTransaction([CTxIn(tx0_outpoint)],
-                              [CTxOut(0.9*COIN, CScript([1]))])
+        # Attempt double-spend, will fail because of inequality
+        dbl_tx = CTransaction([CTxIn(tx0_outpoint), CTxIn(tx0b_outpoint)],
+                              [CTxOut(0.9*COIN, CScript([1])),
+                               CTxOut(100, CScript([b'\xff'*99900]))])
+        try:
+            self.proxy.sendrawtransaction(dbl_tx, True)
+        except bitcoin.rpc.JSONRPCException as exp:
+            self.assertEqual(exp.error['code'], -26) # RPC_VERIFY_REJECTED
+        else:
+            self.fail()
+
+        # Fine with more fees and equal output amounts
+        dbl_tx = CTransaction([CTxIn(tx0_outpoint), CTxIn(tx0b_outpoint)],
+                              [CTxOut(1*COIN, CScript([1])),
+                               CTxOut(100, CScript([b'\xff'*99900]))])
+
         self.proxy.sendrawtransaction(dbl_tx, True)
 
         for tx in chain_txs:
@@ -272,14 +347,16 @@ class Test_ReplaceByFee(unittest.TestCase):
 
         # Higher fee, but the fee per KB is much lower, so the replacement is
         # rejected.
-        tx1b = CTransaction([CTxIn(tx0_outpoint)],
-                            [CTxOut(0.001*COIN,
-                                    CScript([b'a'*999000]))])
+        tx0b_outpoint = self.make_txout(1*COIN)
+        tx1b = CTransaction([CTxIn(tx0_outpoint), CTxIn(tx0b_outpoint)],
+                            [CTxOut(1*COIN, CScript([b'a'])),
+                            CTxOut(0.001*COIN,
+                                    CScript([b'b'*999000]))])
 
         try:
             tx1b_txid = self.proxy.sendrawtransaction(tx1b, True)
         except bitcoin.rpc.JSONRPCException as exp:
-            self.assertEqual(exp.error['code'], -26) # insufficient fee
+            self.assertEqual(exp.error['code'], -26) # RPC_VERIFY_REJECTED
         else:
             self.fail()
 
