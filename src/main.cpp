@@ -1162,7 +1162,7 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
                         error("AcceptToMemoryPool : rejecting replacement %s, not enough additional fees to relay; %s < %s",
                               hash.ToString(),
                               FormatMoney(nDeltaFees),
-                              FormatMoney(txMinFee)),
+                              FormatMoney(::minRelayTxFee.GetFee(nSize))),
                         REJECT_INSUFFICIENTFEE, "insufficient fee");
             }
 
