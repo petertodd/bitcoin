@@ -1087,11 +1087,20 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
         size_t nConflictingSize = 0;
         {
 
-            // Now that we're sure we'd let the transaction into the mempool if not
-            // for conflicts, check if it's economically rational to mine it rather
-            // than the transactions it conflicts with. (if any)
+            // Now that we're (almost) sure we'd let the transaction into the
+            // mempool if not for conflicts, check if it's economically
+            // rational to mine it rather than the transactions it conflicts
+            // with. (if any)
+            //
+            // Secondly, as this requires us to walk the graph of all
+            // transactions that might be replaced, we have the opportunity to
+            // make sure the replacement transaction doesn't spend outputs of
+            // transactions that it replaces. If it did, once those
+            // replacements were removed from the mempool the transaction would
+            // be orphaned; such transactions are invalid and can't be mined.
             LOCK(pool.cs);
             set<uint256> sConflicts;
+            set<uint256> sPrevTxs;
 
             // Start with set of conflicting transactions we're directly
             // double-spending.
@@ -1100,7 +1109,9 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
                 {
                     sConflicts.insert(pool.mapNextTx[txin.prevout].ptx->GetHash());
                 }
+                sPrevTxs.insert(txin.prevout.hash);
             }
+
 
             // Sum up conflicting size/fees for that set and all children.
             int nTxVisited = 0;
@@ -1124,6 +1135,14 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
                 it = sConflicts.begin();
                 uint256 hashChildTx = *it;
                 sConflicts.erase(it);
+
+                if (sPrevTxs.count(hashChildTx))
+                {
+                    return state.DoS(0, error("AcceptToMemoryPool : %s spends conflicting transaction %s",
+                                              hash.ToString(),
+                                              hashChildTx.ToString()),
+                                     REJECT_INVALID, "bad-txns-spends-conflicting-tx");
+                }
 
                 const CTxMemPoolEntry& entry = pool.mapTx.at(hashChildTx);
                 nConflictingFees += entry.GetFee();

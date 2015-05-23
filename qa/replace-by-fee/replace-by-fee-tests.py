@@ -37,8 +37,15 @@ class Test_ReplaceByFee(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         # Make sure mining works
-        while len(cls.proxy.getrawmempool()):
+        mempool_size = 1
+        while mempool_size:
             cls.proxy.setgenerate(True, 1)
+            new_mempool_size = len(cls.proxy.getrawmempool())
+
+            # It's possible to get stuck in a loop here if the mempool has
+            # transactions that can't be mined.
+            assert(new_mempool_size != mempool_size)
+            mempool_size = new_mempool_size
 
     def make_txout(self, amount, scriptPubKey=CScript([1])):
         """Create a txout with a given amount and scriptPubKey
@@ -280,6 +287,43 @@ class Test_ReplaceByFee(unittest.TestCase):
             tx1b_txid = self.proxy.sendrawtransaction(tx1b, True)
         except bitcoin.rpc.JSONRPCException as exp:
             self.assertEqual(exp.error['code'], -26) # insufficient fee
+        else:
+            self.fail()
+
+    def test_spends_of_conflicting_outputs(self):
+        """Replacements that spend conflicting tx outputs are rejected"""
+        utxo1 = self.make_txout(1.2*COIN)
+        utxo2 = self.make_txout(3.0*COIN)
+
+        tx1a = CTransaction([CTxIn(utxo1)],
+                            [CTxOut(1.1*COIN, CScript([b'a']))])
+        tx1a_txid = self.proxy.sendrawtransaction(tx1a, True)
+
+        # Direct spend an output of the transaction we're replacing.
+        tx2 = CTransaction([CTxIn(utxo1), CTxIn(utxo2),
+                            CTxIn(COutPoint(tx1a_txid, 0))],
+                           tx1a.vout)
+
+        try:
+            tx2_txid = self.proxy.sendrawtransaction(tx2, True)
+        except bitcoin.rpc.JSONRPCException as exp:
+            self.assertEqual(exp.error['code'], -26)
+        else:
+            self.fail()
+
+        # Spend tx1a's output to test the indirect case.
+        tx1b = CTransaction([CTxIn(COutPoint(tx1a_txid, 0))],
+                            [CTxOut(1.0*COIN, CScript([b'a']))])
+        tx1b_txid = self.proxy.sendrawtransaction(tx1b, True)
+
+        tx2 = CTransaction([CTxIn(utxo1), CTxIn(utxo2),
+                            CTxIn(COutPoint(tx1b_txid, 0))],
+                           tx1a.vout)
+
+        try:
+            tx2_txid = self.proxy.sendrawtransaction(tx2, True)
+        except bitcoin.rpc.JSONRPCException as exp:
+            self.assertEqual(exp.error['code'], -26)
         else:
             self.fail()
 
