@@ -1159,44 +1159,47 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
                 }
             }
 
-            // Replace?
-            //
-            // First of all we can't allow a replacement unless it pays greater
-            // fees than the transactions it conflicts with - if we did the
-            // bandwidth used by those conflicting transactions would not be
-            // paid for.
-            if (nFees < nConflictingFees)
+            if (nConflictingSize > 0)
             {
-                return state.DoS(0, error("AcceptToMemoryPool : rejecting replacement %s, less fees than conflicting txs; %s < %s",
-                                          hash.ToString(), FormatMoney(nFees), FormatMoney(nConflictingFees)),
-                                 REJECT_INSUFFICIENTFEE, "insufficient fee");
-            }
+                // Replace?
+                //
+                // First of all we can't allow a replacement unless it pays greater
+                // fees than the transactions it conflicts with - if we did the
+                // bandwidth used by those conflicting transactions would not be
+                // paid for.
+                if (nFees < nConflictingFees)
+                {
+                    return state.DoS(0, error("AcceptToMemoryPool : rejecting replacement %s, less fees than conflicting txs; %s < %s",
+                                              hash.ToString(), FormatMoney(nFees), FormatMoney(nConflictingFees)),
+                                     REJECT_INSUFFICIENTFEE, "insufficient fee");
+                }
 
-            // Secondly in addition to paying more fees than the conflicts the
-            // new transaction must additionally pay for its own bandwidth.
-            CAmount nDeltaFees = nFees - nConflictingFees;
-            if (nDeltaFees < ::minRelayTxFee.GetFee(nSize))
-            {
-                return state.DoS(0,
-                        error("AcceptToMemoryPool : rejecting replacement %s, not enough additional fees to relay; %s < %s",
-                              hash.ToString(),
-                              FormatMoney(nDeltaFees),
-                              FormatMoney(::minRelayTxFee.GetFee(nSize))),
-                        REJECT_INSUFFICIENTFEE, "insufficient fee");
-            }
+                // Secondly in addition to paying more fees than the conflicts the
+                // new transaction must additionally pay for its own bandwidth.
+                CAmount nDeltaFees = nFees - nConflictingFees;
+                if (nDeltaFees < ::minRelayTxFee.GetFee(nSize))
+                {
+                    return state.DoS(0,
+                            error("AcceptToMemoryPool : rejecting replacement %s, not enough additional fees to relay; %s < %s",
+                                  hash.ToString(),
+                                  FormatMoney(nDeltaFees),
+                                  FormatMoney(::minRelayTxFee.GetFee(nSize))),
+                            REJECT_INSUFFICIENTFEE, "insufficient fee");
+                }
 
-            // Finally replace only if we end up with a larger fees-per-kb than
-            // the replacements.
-            CFeeRate oldFeeRate(nConflictingFees, nConflictingSize);
-            CFeeRate newFeeRate(nFees, nSize);
-            if (newFeeRate <= oldFeeRate)
-            {
-                return state.DoS(0,
-                        error("AcceptToMemoryPool : rejecting replacement %s; new fee %s <= old fee %s",
-                              hash.ToString(),
-                              newFeeRate.ToString(),
-                              oldFeeRate.ToString()),
-                        REJECT_INSUFFICIENTFEE, "insufficient fee");
+                // Finally replace only if we end up with a larger fees-per-kb than
+                // the replacements.
+                CFeeRate oldFeeRate(nConflictingFees, nConflictingSize);
+                CFeeRate newFeeRate(nFees, nSize);
+                if (newFeeRate <= oldFeeRate)
+                {
+                    return state.DoS(0,
+                            error("AcceptToMemoryPool : rejecting replacement %s; new fee %s <= old fee %s",
+                                  hash.ToString(),
+                                  newFeeRate.ToString(),
+                                  oldFeeRate.ToString()),
+                            REJECT_INSUFFICIENTFEE, "insufficient fee");
+                }
             }
         }
 
