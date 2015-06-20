@@ -79,9 +79,7 @@ enum {
     NODE_REPLACE_BY_FEE = (1 << 26),
 };
 
-// Mike Hearn's Bitcoin XT also relays doublespends, and can be identified by
-// the NODE_GETUTXO's bits, so connect to them as well.
-const uint64_t NODE_RELAYS_DOUBLESPENDS = NODE_REPLACE_BY_FEE | NODE_GETUTXOS;
+const uint64_t NODE_RELAYS_DOUBLESPENDS = NODE_REPLACE_BY_FEE;
 
 /** A CService with information about it as peer */
 class CAddress : public CService
