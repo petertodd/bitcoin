@@ -26,6 +26,7 @@
 #include "scheduler.h"
 #include "txdb.h"
 #include "txmempool.h"
+#include "torcontrol.h"
 #include "ui_interface.h"
 #include "util.h"
 #include "utilmoneystr.h"
@@ -165,6 +166,7 @@ void Shutdown()
 #endif
     GenerateBitcoins(false, 0, Params());
     StopNode();
+    StopTorControl();
     UnregisterNodeSignals(GetNodeSignals());
 
     if (fFeeEstimatesInitialized)
@@ -719,6 +721,8 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
             LogPrintf("%s: parameter interaction: -listen=0 -> setting -upnp=0\n", __func__);
         if (SoftSetBoolArg("-discover", false))
             LogPrintf("%s: parameter interaction: -listen=0 -> setting -discover=0\n", __func__);
+        if (SoftSetBoolArg("-listentor", false))
+            LogPrintf("%s: parameter interaction: -listen=0 -> setting -listentor0\n", __func__);
     }
 
     if (mapArgs.count("-externalip")) {
@@ -1508,6 +1512,9 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
     LogPrintf("mapWallet.size() = %u\n",       pwalletMain ? pwalletMain->mapWallet.size() : 0);
     LogPrintf("mapAddressBook.size() = %u\n",  pwalletMain ? pwalletMain->mapAddressBook.size() : 0);
 #endif
+
+    if (GetBoolArg("-listentor", true))
+        StartTorControl(threadGroup, scheduler);
 
     StartNode(threadGroup, scheduler);
 
