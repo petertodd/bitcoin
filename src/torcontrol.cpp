@@ -152,13 +152,12 @@ void TorControlConnection::eventcb(struct bufferevent *bev, short what, void *ct
     if (what & BEV_EVENT_CONNECTED) {
         LogPrintf("[tor] Succesfully connected!\n");
         self->connected(*self);
-    } else if (what & BEV_EVENT_ERROR) {
-        LogPrintf("[tor] Error connecting to Tor control socket\n");
-        // TODO what to do here
-        // How to get an error code/message?
-        // It looks like EVENT_CONNECTED is invoked anyway
-    } else if (what & BEV_EVENT_EOF) {
-        LogPrintf("[tor] End of stream\n");
+    } else if (what & (BEV_EVENT_EOF|BEV_EVENT_ERROR)) {
+        if (what & BEV_EVENT_ERROR)
+            LogPrintf("[tor] Error connecting to Tor control socket\n");
+        else
+            LogPrintf("[tor] End of stream\n");
+        self->Disconnect();
         self->disconnected(*self);
     }
 }
@@ -202,7 +201,7 @@ bool TorControlConnection::Disconnect()
 bool TorControlConnection::Command(const std::string &cmd, const ReplyHandlerCB& reply_handler)
 {
     struct evbuffer *buf = bufferevent_get_output(b_conn);
-    if (buf)
+    if (!buf)
         return false;
     evbuffer_add(buf, cmd.data(), cmd.size());
     evbuffer_add(buf, "\r\n", 2);
@@ -324,20 +323,35 @@ public:
 
     /** Callback for shutdown poll timer */
     static void shutdown_poll_cb(evutil_socket_t fd, short what, void *arg);
+    /** Callback for reconnect timer */
+    static void reconnect_cb(evutil_socket_t fd, short what, void *arg);
 
     /** Get name fo file to store private key in */
     std::string GetPrivateKeyFile();
+
+    /** Reconnect, after getting disconnected */
+    void Reconnect();
 private:
+    struct event_base* base;
     std::string target;
     TorControlConnection conn;
     std::string private_key;
     std::string service_id;
     bool reconnect;
     struct event *shutdown_poll_ev;
+    struct event *reconnect_ev;
+    float reconnect_timeout;
 };
 
+/** Exponential backoff configuration - initial timeout in seconds */
+static const float RECONNECT_TIMEOUT_START = 1.0;
+/** Exponential backoff configuration - growth factor */
+static const float RECONNECT_TIMEOUT_EXP = 1.5;
+
 TorController::TorController(struct event_base* base, const std::string& target):
-    target(target), conn(base), reconnect(true), shutdown_poll_ev(0)
+    base(base),
+    target(target), conn(base), reconnect(true), shutdown_poll_ev(0), reconnect_ev(0),
+    reconnect_timeout(RECONNECT_TIMEOUT_START)
 {
     // Start connection attempts immediately
     if (!conn.Connect(target, boost::bind(&TorController::connected_cb, this, _1),
@@ -364,6 +378,8 @@ TorController::~TorController()
 {
     if (shutdown_poll_ev)
         event_del(shutdown_poll_ev);
+    if (reconnect_ev)
+        event_del(reconnect_ev);
 }
 
 void TorController::add_onion_cb(TorControlConnection& conn, const TorControlReply& reply)
@@ -470,8 +486,10 @@ void TorController::protocolinfo_cb(TorControlConnection& conn, const TorControl
 
 void TorController::connected_cb(TorControlConnection& conn)
 {
+    reconnect_timeout = RECONNECT_TIMEOUT_START;
     // First send a PROTOCOLINFO command to figure out what authentication is expected
-    conn.Command("PROTOCOLINFO 1", boost::bind(&TorController::protocolinfo_cb, this, _1, _2));
+    if (!conn.Command("PROTOCOLINFO 1", boost::bind(&TorController::protocolinfo_cb, this, _1, _2)))
+        LogPrintf("[tor] Error sending initial protocolinfo command\n");
 }
 
 void TorController::disconnected_cb(TorControlConnection& conn)
@@ -479,9 +497,17 @@ void TorController::disconnected_cb(TorControlConnection& conn)
     if (!reconnect)
         return;
     LogPrintf("[tor] Disconnected from Tor control port %s, trying to reconnect\n", target);
+    // Single-shot timer for reconnect. Use exponential backoff.
+    struct timeval time = MillisToTimeval(int64_t(reconnect_timeout * 1000.0));
+    reconnect_ev = event_new(base, -1, 0, reconnect_cb, this);
+    event_add(reconnect_ev, &time);
+    reconnect_timeout *= RECONNECT_TIMEOUT_EXP;
+}
+
+void TorController::Reconnect()
+{
     /* Try to reconnect and reestablish if we get booted - for example, Tor
      * may be restarting.
-     * TODO: add a timeout, and a retry.
      */
     if (!conn.Connect(target, boost::bind(&TorController::connected_cb, this, _1),
          boost::bind(&TorController::disconnected_cb, this, _1) )) {
@@ -498,13 +524,23 @@ void TorController::shutdown_poll_cb(evutil_socket_t fd, short what, void *arg)
 {
     TorController *self = (TorController*)arg;
     if (ShutdownRequested()) {
-        // Shutdown was requested. Stop timer, and request control connection to terminate
+        // Shutdown was requested. Stop timers, and request control connection to terminate
         LogPrintf("[tor] Thread interrupt\n");
-        event_del(self->shutdown_poll_ev);
+        if (self->shutdown_poll_ev)
+            event_del(self->shutdown_poll_ev);
         self->shutdown_poll_ev = 0;
+        if (self->reconnect_ev)
+            event_del(self->reconnect_ev);
+        self->reconnect_ev = 0;
         self->reconnect = false;
         self->conn.Disconnect();
     }
+}
+
+void TorController::reconnect_cb(evutil_socket_t fd, short what, void *arg)
+{
+    TorController *self = (TorController*)arg;
+    self->Reconnect();
 }
 
 /****** Thread ********/
