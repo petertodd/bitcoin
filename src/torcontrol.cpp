@@ -166,8 +166,17 @@ bool TorControlConnection::Connect(const std::string &target, const ConnectionCB
 {
     if (b_conn)
         Disconnect();
-    // Create a new socket, set up callbacks and enable bits
-    b_conn = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE/*|BEV_OPT_DEFER_CALLBACKS*/);
+    // Parse target address:port
+    struct sockaddr_storage connect_to_addr;
+    int connect_to_addrlen = sizeof(connect_to_addr);
+    if (evutil_parse_sockaddr_port(target.c_str(),
+        (struct sockaddr*)&connect_to_addr, &connect_to_addrlen)<0) {
+        perror("evutil_parse_sockaddr_port\n");
+        return false;
+    }
+
+    // Create a new socket, set up callbacks and enable notification bits
+    b_conn = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
     if (!b_conn)
         return false;
     bufferevent_setcb(b_conn, TorControlConnection::readcb, NULL, TorControlConnection::eventcb, this);
@@ -175,14 +184,7 @@ bool TorControlConnection::Connect(const std::string &target, const ConnectionCB
     this->connected = connected;
     this->disconnected = disconnected;
 
-    struct sockaddr_storage connect_to_addr;
-    int connect_to_addrlen = sizeof(connect_to_addr);
-
-    if (evutil_parse_sockaddr_port(target.c_str(),
-        (struct sockaddr*)&connect_to_addr, &connect_to_addrlen)<0) {
-        perror("evutil_parse_sockaddr_port\n");
-        return false;
-    }
+    // Finally, connect to target
     if (bufferevent_socket_connect(b_conn, (struct sockaddr*)&connect_to_addr, connect_to_addrlen) < 0) {
         perror("bufferevent_socket_connect");
         return false;
@@ -200,6 +202,8 @@ bool TorControlConnection::Disconnect()
 
 bool TorControlConnection::Command(const std::string &cmd, const ReplyHandlerCB& reply_handler)
 {
+    if (!b_conn)
+        return false;
     struct evbuffer *buf = bufferevent_get_output(b_conn);
     if (!buf)
         return false;
