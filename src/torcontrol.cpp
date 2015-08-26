@@ -474,7 +474,6 @@ void TorController::protocolinfo_cb(TorControlConnection& conn, const TorControl
             LogPrintf("[tor] Using COOKIE authentication, reading cookie authentication from %s\n", cookiefile);
             std::string cookie = ReadBinaryFile(cookiefile).second;
             if (!cookie.empty()) {
-                LogPrintf("[tor] Auth: %s\n", HexStr(cookie));
                 conn.Command("AUTHENTICATE " + HexStr(cookie), boost::bind(&TorController::auth_cb, this, _1, _2));
             } else {
                 LogPrintf("[tor] Authentication cookie not found\n");
