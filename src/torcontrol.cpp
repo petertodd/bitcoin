@@ -21,6 +21,8 @@
 #include <event2/util.h>
 #include <event2/event.h>
 
+const std::string DEFAULT_TOR_CONTROL = "127.0.0.1:9051";
+
 /****** Low-level TorControlConnection ********/
 
 /** Reply from Tor, can be single or multi-line */
@@ -436,7 +438,7 @@ static void TorControlThread()
         LogPrintf("[tor] Unable to create event_base_new");
         return;
     }
-    TorController ctrl(base, "127.0.0.1:9051");
+    TorController ctrl(base, GetArg("-torcontrol", DEFAULT_TOR_CONTROL));
 
     event_base_dispatch(base);
     event_base_free(base);
