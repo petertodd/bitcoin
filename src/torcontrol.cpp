@@ -2,6 +2,7 @@
 #include "utilstrencodings.h"
 #include "net.h"
 #include "util.h"
+#include "init.h" // Just for ShutdownRequested
 
 #include <vector>
 #include <deque>
@@ -64,6 +65,11 @@ public:
      */
     bool Connect(const std::string &target, const ConnectionCB& connected, const ConnectionCB& disconnected);
 
+    /**
+     * Disconnect from Tor control port.
+     */
+    bool Disconnect();
+
     /** Send a command, register a handler for the reply.
      * A trailing CRLF is automatically added.
      * Return true on success.
@@ -90,6 +96,17 @@ private:
     /** Response handlers */
     std::deque<ReplyHandlerCB> reply_handlers;
 };
+
+TorControlConnection::TorControlConnection(struct event_base *base):
+    base(base), b_conn(0)
+{
+}
+
+TorControlConnection::~TorControlConnection()
+{
+    if (b_conn)
+        bufferevent_free(b_conn);
+}
 
 void TorControlConnection::readcb(struct bufferevent *bev, void *ctx)
 {
@@ -146,25 +163,16 @@ void TorControlConnection::eventcb(struct bufferevent *bev, short what, void *ct
     }
 }
 
-TorControlConnection::TorControlConnection(struct event_base *base):
-    base(base)
-{
-    // Create a new socket, set up callbacks and enable bits
-    b_conn = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE/*|BEV_OPT_DEFER_CALLBACKS*/);
-    if (!b_conn) {
-        throw std::runtime_error("bufferevent_socket_new");
-    }
-    bufferevent_setcb(b_conn, TorControlConnection::readcb, NULL, TorControlConnection::eventcb, this);
-    bufferevent_enable(b_conn, EV_READ|EV_WRITE);
-}
-
-TorControlConnection::~TorControlConnection()
-{
-    bufferevent_free(b_conn);
-}
-
 bool TorControlConnection::Connect(const std::string &target, const ConnectionCB& connected, const ConnectionCB& disconnected)
 {
+    if (b_conn)
+        Disconnect();
+    // Create a new socket, set up callbacks and enable bits
+    b_conn = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE/*|BEV_OPT_DEFER_CALLBACKS*/);
+    if (!b_conn)
+        return false;
+    bufferevent_setcb(b_conn, TorControlConnection::readcb, NULL, TorControlConnection::eventcb, this);
+    bufferevent_enable(b_conn, EV_READ|EV_WRITE);
     this->connected = connected;
     this->disconnected = disconnected;
 
@@ -180,6 +188,14 @@ bool TorControlConnection::Connect(const std::string &target, const ConnectionCB
         perror("bufferevent_socket_connect");
         return false;
     }
+    return true;
+}
+
+bool TorControlConnection::Disconnect()
+{
+    if (b_conn)
+        bufferevent_free(b_conn);
+    b_conn = 0;
     return true;
 }
 
@@ -305,6 +321,9 @@ public:
     /** Callback after connection lost */
     void disconnected_cb(TorControlConnection& conn);
 
+    /** Callback for shutdown poll timer */
+    static void shutdown_poll_cb(evutil_socket_t fd, short what, void *arg);
+
     /** Get name fo file to store private key in */
     std::string GetPrivateKeyFile();
 private:
@@ -313,24 +332,37 @@ private:
     std::string private_key;
     std::string service_id;
     bool reconnect;
+    struct event *shutdown_poll_ev;
 };
 
 TorController::TorController(struct event_base* base, const std::string& target):
-    target(target), conn(base), reconnect(true)
+    target(target), conn(base), reconnect(true), shutdown_poll_ev(0)
 {
     // Start connection attempts immediately
     if (!conn.Connect(target, boost::bind(&TorController::connected_cb, this, _1),
          boost::bind(&TorController::disconnected_cb, this, _1) )) {
         LogPrintf("[tor] Initiating connection to Tor control port %s failed\n", target);
     }
+    // Read service private key if cached
     std::pair<bool,std::string> pkf = ReadBinaryFile(GetPrivateKeyFile());
     if (pkf.first) {
         LogPrintf("[tor] Reading cached private key from %s\n", GetPrivateKeyFile());
         private_key = pkf.second;
     }
+    // Periodic timer event to poll for shutdown
+    // The same 200ms as in bitcoind. This is not the nicest solution, but we cannot exactly use
+    // boost::interrupt here.
+    struct timeval time;
+    time.tv_usec = 200000;
+    time.tv_sec = 0;
+    shutdown_poll_ev = event_new(base, -1, EV_PERSIST, shutdown_poll_cb, this);
+    event_add(shutdown_poll_ev, &time);
 }
+
 TorController::~TorController()
 {
+    if (shutdown_poll_ev)
+        event_del(shutdown_poll_ev);
 }
 
 void TorController::add_onion_cb(TorControlConnection& conn, const TorControlReply& reply)
@@ -369,7 +401,7 @@ void TorController::auth_cb(TorControlConnection& conn, const TorControlReply& r
             private_key = "NEW:BEST";
         // Request hidden service, redirect port.
         // Note that the 'virtual' port doesn't have to be the same as our internal port, but this is just a convenient
-        // choice.
+        // choice.  TODO; refactor the shutdown sequence some day.
         conn.Command(strprintf("ADD_ONION %s Port=%i,127.0.0.1:%i", private_key, GetListenPort(), GetListenPort()),
             boost::bind(&TorController::add_onion_cb, this, _1, _2));
     } else {
@@ -461,6 +493,19 @@ std::string TorController::GetPrivateKeyFile()
     return (GetDataDir() / "onion_private_key").string();
 }
 
+void TorController::shutdown_poll_cb(evutil_socket_t fd, short what, void *arg)
+{
+    TorController *self = (TorController*)arg;
+    if (ShutdownRequested()) {
+        // Shutdown was requested. Stop timer, and request control connection to terminate
+        LogPrintf("[tor] Thread interrupt\n");
+        event_del(self->shutdown_poll_ev);
+        self->shutdown_poll_ev = 0;
+        self->reconnect = false;
+        self->conn.Disconnect();
+    }
+}
+
 /****** Thread ********/
 
 static void TorControlThread()
@@ -483,6 +528,6 @@ void StartTorControl(boost::thread_group& threadGroup, CScheduler& scheduler)
 
 void StopTorControl()
 {
-    // Async signal to disconnect from control socket, stop event loop.
+    /* Nothing to do actually. Everything is cleaned up when thread exits */
 }
 
