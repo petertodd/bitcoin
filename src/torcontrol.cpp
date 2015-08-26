@@ -254,19 +254,33 @@ static std::map<std::string,std::string> ParseTorReplyMapping(const std::string 
     return mapping;
 }
 
-/** Read Tor authentication cookie from specified location from disk */
-static std::string ReadTorAuthCookie(const std::string &filename)
+/** Read full contents of a file and return them in a std::string. */
+static std::pair<bool,std::string> ReadBinaryFile(const std::string &filename)
 {
     FILE *f = fopen(filename.c_str(), "rb");
     if (f == NULL)
-        return "";
-    std::string cookie;
+        return std::make_pair(false,"");
+    std::string retval;
     char buffer[128];
     size_t n;
     while ((n=fread(buffer, 1, sizeof(buffer), f)) > 0)
-        cookie.append(buffer, buffer+n);
+        retval.append(buffer, buffer+n);
     fclose(f);
-    return cookie;
+    return std::make_pair(true,retval);
+}
+
+/** Write contents of std::string to a file.
+ * @return true on success.
+ */
+static bool WriteBinaryFile(const std::string &filename, const std::string &data)
+{
+    FILE *f = fopen(filename.c_str(), "wb");
+    if (f == NULL)
+        return false;
+    if (fwrite(data.data(), 1, data.size(), f) != data.size())
+        return false;
+    fclose(f);
+    return true;
 }
 
 /****** Bitcoin specific TorController implementation ********/
@@ -290,6 +304,9 @@ public:
     void connected_cb(TorControlConnection& conn);
     /** Callback after connection lost */
     void disconnected_cb(TorControlConnection& conn);
+
+    /** Get name fo file to store private key in */
+    std::string GetPrivateKeyFile();
 private:
     std::string target;
     TorControlConnection conn;
@@ -305,6 +322,11 @@ TorController::TorController(struct event_base* base, const std::string& target)
     if (!conn.Connect(target, boost::bind(&TorController::connected_cb, this, _1),
          boost::bind(&TorController::disconnected_cb, this, _1) )) {
         LogPrintf("[tor] Initiating connection to Tor control port %s failed\n", target);
+    }
+    std::pair<bool,std::string> pkf = ReadBinaryFile(GetPrivateKeyFile());
+    if (pkf.first) {
+        LogPrintf("[tor] Reading cached private key from %s\n", GetPrivateKeyFile());
+        private_key = pkf.second;
     }
 }
 TorController::~TorController()
@@ -326,6 +348,11 @@ void TorController::add_onion_cb(TorControlConnection& conn, const TorControlRep
 
         CService service(service_id+".onion", GetListenPort(), false);
         LogPrintf("[tor] Got service ID %s, advertizing service %s\n", service_id, service.ToString());
+        if (WriteBinaryFile(GetPrivateKeyFile(), private_key)) {
+            LogPrintf("[tor] Cached service private key to %s\n", GetPrivateKeyFile());
+        } else {
+            LogPrintf("[tor] Error writing service private key to %s\n", GetPrivateKeyFile());
+        }
         AddLocal(service, LOCAL_MANUAL);
         // ... onion requested - keep connection open
     } else {
@@ -392,7 +419,7 @@ void TorController::protocolinfo_cb(TorControlConnection& conn, const TorControl
         } else if (methods.count("COOKIE")) {
             // Cookie: hexdump -e '32/1 "%02x""\n"'  ~/.tor/control_auth_cookie
             LogPrintf("[tor] Using COOKIE authentication, reading cookie authentication from %s\n", cookiefile);
-            std::string cookie = ReadTorAuthCookie(cookiefile);
+            std::string cookie = ReadBinaryFile(cookiefile).second;
             if (!cookie.empty()) {
                 LogPrintf("[tor] Auth: %s\n", HexStr(cookie));
                 conn.Command("AUTHENTICATE " + HexStr(cookie), boost::bind(&TorController::auth_cb, this, _1, _2));
@@ -427,6 +454,11 @@ void TorController::disconnected_cb(TorControlConnection& conn)
          boost::bind(&TorController::disconnected_cb, this, _1) )) {
         LogPrintf("[tor] Re-initiating connection to Tor control port %s failed\n", target);
     }
+}
+
+std::string TorController::GetPrivateKeyFile()
+{
+    return (GetDataDir() / "onion_private_key").string();
 }
 
 /****** Thread ********/
