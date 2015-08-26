@@ -202,7 +202,8 @@ bool TorControlConnection::Disconnect()
 bool TorControlConnection::Command(const std::string &cmd, const ReplyHandlerCB& reply_handler)
 {
     struct evbuffer *buf = bufferevent_get_output(b_conn);
-    assert(buf);
+    if (buf)
+        return false;
     evbuffer_add(buf, cmd.data(), cmd.size());
     evbuffer_add(buf, "\r\n", 2);
     reply_handlers.push_back(reply_handler);
