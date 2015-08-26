@@ -76,10 +76,6 @@ public:
      */
     bool Command(const std::string &cmd, const ReplyHandlerCB& reply_handler);
 
-    /** Libevent handlers: internal */
-    static void readcb(struct bufferevent *bev, void *ctx);
-    static void eventcb(struct bufferevent *bev, short what, void *ctx);
-
     /** Response handlers for async replies */
     boost::signals2::signal<void(TorControlConnection &,const TorControlReply &)> async_handler;
 private:
@@ -95,6 +91,10 @@ private:
     TorControlReply message;
     /** Response handlers */
     std::deque<ReplyHandlerCB> reply_handlers;
+
+    /** Libevent handlers: internal */
+    static void readcb(struct bufferevent *bev, void *ctx);
+    static void eventcb(struct bufferevent *bev, short what, void *ctx);
 };
 
 TorControlConnection::TorControlConnection(struct event_base *base):
@@ -314,22 +314,6 @@ public:
     TorController(struct event_base* base, const std::string& target);
     ~TorController();
 
-    /** Callback for ADD_ONION result */
-    void add_onion_cb(TorControlConnection& conn, const TorControlReply& reply);
-    /** Callback for AUTHENTICATE result */
-    void auth_cb(TorControlConnection& conn, const TorControlReply& reply);
-    /** Callback for PROTOCOLINFO result */
-    void protocolinfo_cb(TorControlConnection& conn, const TorControlReply& reply);
-    /** Callback after succesful connection */
-    void connected_cb(TorControlConnection& conn);
-    /** Callback after connection lost */
-    void disconnected_cb(TorControlConnection& conn);
-
-    /** Callback for shutdown poll timer */
-    static void shutdown_poll_cb(evutil_socket_t fd, short what, void *arg);
-    /** Callback for reconnect timer */
-    static void reconnect_cb(evutil_socket_t fd, short what, void *arg);
-
     /** Get name fo file to store private key in */
     std::string GetPrivateKeyFile();
 
@@ -345,6 +329,22 @@ private:
     struct event *shutdown_poll_ev;
     struct event *reconnect_ev;
     float reconnect_timeout;
+
+    /** Callback for ADD_ONION result */
+    void add_onion_cb(TorControlConnection& conn, const TorControlReply& reply);
+    /** Callback for AUTHENTICATE result */
+    void auth_cb(TorControlConnection& conn, const TorControlReply& reply);
+    /** Callback for PROTOCOLINFO result */
+    void protocolinfo_cb(TorControlConnection& conn, const TorControlReply& reply);
+    /** Callback after succesful connection */
+    void connected_cb(TorControlConnection& conn);
+    /** Callback after connection lost */
+    void disconnected_cb(TorControlConnection& conn);
+
+    /** Callback for shutdown poll timer */
+    static void shutdown_poll_cb(evutil_socket_t fd, short what, void *arg);
+    /** Callback for reconnect timer */
+    static void reconnect_cb(evutil_socket_t fd, short what, void *arg);
 };
 
 /** Exponential backoff configuration - initial timeout in seconds */
