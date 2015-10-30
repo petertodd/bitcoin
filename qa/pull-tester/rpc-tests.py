@@ -88,6 +88,7 @@ testScriptsExt = [
     'invalidblockrequest.py',
     'p2p-acceptblock.py',
     'mempool_packages.py',
+    'replace-by-fee.py',
 ]
 
 #Enable ZMQ tests
