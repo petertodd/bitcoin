@@ -22,6 +22,8 @@ bitcoind/bitcoin-qt (on Linux).
 Downgrade warning
 ------------------
 
+### Downgrade to a version < 0.10.0
+
 Because release 0.10.0 and later makes use of headers-first synchronization and
 parallel block download (see further), the block files and databases are not
 backwards-compatible with pre-0.10 versions of Bitcoin Core or other software:
@@ -40,8 +42,17 @@ bootstrap.dat) anew afterwards. It is possible that the data from a completely
 synchronised 0.10 node may be usable in older versions as-is, but this is not
 supported and may break as soon as the older version attempts to reindex.
 
-This does not affect wallet forward or backward compatibility. There are no
-known problems when downgrading from 0.11.x to 0.10.x.
+This does not affect wallet forward or backward compatibility.
+
+### Downgrade to a version < 0.12.0
+
+Because release 0.12.0 and later will obfuscate the chainstate on every
+fresh sync or reindex, the chainstate is not backwards-compatible with
+pre-0.12 versions of Bitcoin Core or other software.
+
+If you want to downgrade after you have done a reindex with 0.12.0 or later,
+you will need to reindex when you first start Bitcoin Core version 0.11 or
+earlier.
 
 Notable changes
 ===============
@@ -81,16 +92,17 @@ Whitelisted peers will never be disconnected, although their traffic counts for
 calculating the target.
 
 A more detailed documentation about keeping traffic low can be found in
-[/doc/reducetraffic.md](/doc/reducetraffic.md).
+[/doc/reduce-traffic.md](/doc/reduce-traffic.md).
 
 Direct headers announcement (BIP 130)
 -------------------------------------
 
-Between compatible peers, BIP 130 direct headers announcement is used. This
-means that blocks are advertized by announcing their headers directly, instead
-of just announcing the hash. In a reorganization, all new headers are sent,
-instead of just the new tip. This can often prevent an extra roundtrip before
-the actual block is downloaded.
+Between compatible peers, [BIP 130]
+(https://github.com/bitcoin/bips/blob/master/bip-0130.mediawiki)
+direct headers announcement is used. This means that blocks are advertized by
+announcing their headers directly, instead of just announcing the hash. In a
+reorganization, all new headers are sent, instead of just the new tip. This
+can often prevent an extra roundtrip before the actual block is downloaded.
 
 Memory pool limiting
 --------------------
@@ -106,10 +118,17 @@ relay fee.
 Bitcoin Core 0.12 will have a strict maximum size on the mempool. The
 default value is 300 MB and can be configured with the `-maxmempool`
 parameter. Whenever a transaction would cause the mempool to exceed
-its maximum size, the transaction with the lowest feerate will be
-evicted and the node's minimum relay fee will be increased to match
-this feerate. The initial minimum relay fee is set to 1000 satoshis
-per kB.
+its maximum size, the transaction that (along with in-mempool descendants) has
+the lowest total feerate (as a package) will be evicted and the node's effective
+minimum relay feerate will be increased to match this feerate plus the initial
+minimum relay feerate. The initial minimum relay feerate is set to
+1000 satoshis per kB.
+
+Bitcoin Core 0.12 also introduces new default policy limits on the length and
+size of unconfirmed transaction chains that are allowed in the mempool
+(generally limiting the length of unconfirmed chains to 25 transactions, with a
+total size of 101 KB).  These limits can be overriden using command line
+arguments; see the extended help (`--help -help-debug`) for more information.
 
 Replace-by-fee transactions
 ---------------------------
@@ -141,13 +160,13 @@ Relay: Any sequence of pushdatas in OP_RETURN outputs now allowed
 
 Previously OP_RETURN outputs with a payload were only relayed and mined if they
 had a single pushdata. This restriction has been lifted to allow any
-combination of data pushes and numeric constant opcodes (OP_1 to OP_16). The
-limit on OP_RETURN output size is now applied to the entire serialized
-scriptPubKey, 83 bytes by default. (the previous 80 byte default plus three
-bytes overhead)
+combination of data pushes and numeric constant opcodes (OP_1 to OP_16) after
+the OP_RETURN. The limit on OP_RETURN output size is now applied to the entire
+serialized scriptPubKey, 83 bytes by default. (the previous 80 byte default plus
+three bytes overhead)
 
-Relay: Priority transactions
-----------------------------
+Relay and Mining: Priority transactions
+---------------------------------------
 
 Transactions that do not pay the minimum relay fee, are called "free
 transactions" or priority transactions. Previous versions of Bitcoin
@@ -156,36 +175,13 @@ setting of `-limitfreerelay=<r>` (default: `r=15` kB per minute) and
 `-blockprioritysize=<s>` (default: `50000` bytes of a block's
 priority space).
 
-Priority code is planned to get moved out of from Bitcoin Core 0.13
-and the default block priority size has been set to `0` in Bitcoin Core
-0.12.
-
-BIP65 - CHECKLOCKTIMEVERIFY
----------------------------
-
-Previously it was impossible to create a transaction output that was guaranteed
-to be unspendable until a specific date in the future. CHECKLOCKTIMEVERIFY is a
-new opcode that allows a script to check if a specific block height or time has
-been reached, failing the script otherwise. This enables a wide variety of new
-functionality such as time-locked escrows, secure payment channels, etc.
-
-BIP65 implements CHECKLOCKTIMEVERIFY by introducing block version 4, which adds
-additional restrictions to the NOP2 opcode. The same miner-voting mechanism as
-in BIP34 and BIP66 is used: when 751 out of a sequence of 1001 blocks have
-version number 4 or higher, the new consensus rule becomes active for those
-blocks. When 951 out of a sequence of 1001 blocks have version number 4 or
-higher, it becomes mandatory for all blocks and blocks with versions less than
-4 are rejected.
-
-Bitcoin Core's block templates are now for version 4 blocks only, and any
-mining software relying on its `getblocktemplate` must be updated in parallel
-to use either libblkmaker version 0.4.3 or any version from 0.5.2 onward. If
-you are solo mining, this will affect you the moment you upgrade Bitcoin Core,
-which must be done prior to BIP65 achieving its 951/1001 status.  If you are
-mining with the stratum mining protocol: this does not affect you.  If you are
-mining with the getblocktemplate protocol to a pool: this will affect you at
-the pool operator's discretion, which must be no later than BIP65 achieving its
-951/1001 status.
+Priority code is scheduled for removal in Bitcoin Core 0.13. In
+Bitcoin Core 0.12, the default block priority size has been set to `0`
+and the priority calculation has been simplified to only include the
+coin age of inputs that were in the blockchain at the time the transaction
+was accepted into the mempool.  In addition priority transactions are not
+accepted to the mempool if mempool limiting has triggered a higher effective
+minimum relay fee.
 
 Automatically use Tor hidden services
 -------------------------------------
@@ -212,7 +208,7 @@ Bitcoind can now (optionally) asynchronously notify clients through a
 ZMQ-based PUB socket of the arrival of new transactions and blocks.
 This feature requires installation of the ZMQ C API library 4.x and
 configuring its use through the command line or configuration file.
-Please see docs/zmq.md for details of operation.
+Please see [docs/zmq.md](/doc/zmq.md) for details of operation.
 
 Wallet: Transaction fees
 ------------------------
@@ -267,6 +263,17 @@ sanity check. Since 0.12, these are no longer stored. When loading a
 0.12 wallet into an older version, it will automatically rescan to avoid
 failed checks.
 
+Wallet: Pruning
+---------------
+
+With 0.12 it is possible to use wallet functionality in pruned mode.
+However, rescans as well as the RPCs `importwallet`, `importaddress`,
+`importprivkey` are disabled.
+
+To enable block pruning set `prune=<N>` on the command line or in
+`bitcoin.conf`, where `N` is the number of MiB to allot for
+raw block & undo data.
+
 `NODE_BLOOM` service bit
 ------------------------
 
@@ -303,11 +310,14 @@ RPC: Low-level API changes
 * The `asm` property of each scriptSig now contains the decoded signature hash
   type for each signature that provides a valid defined hash type.
 
+* OP_NOP2 has been renamed to OP_CHECKLOCKTIMEVERIFY by [BIP 65](https://github.com/bitcoin/bips/blob/master/bip-0065.mediawiki)
+
 The following items contain assembly representations of scriptSig signatures
 and are affected by this change:
 
 - RPC `getrawtransaction`
 - RPC `decoderawtransaction`
+- RPC `decodescript`
 - REST `/rest/tx/` (JSON format)
 - REST `/rest/block/` (JSON format when including extended tx details)
 - `bitcoin-tx -json`
@@ -315,11 +325,11 @@ and are affected by this change:
 For example, the `scriptSig.asm` property of a transaction input that
 previously showed an assembly representation of:
 
-    304502207fa7a6d1e0ee81132a269ad84e68d695483745cde8b541e3bf630749894e342a022100c1f7ab20e13e22fb95281a870f3dcf38d782e53023ee313d741ad0cfbc0c509001
+    304502207fa7a6d1e0ee81132a269ad84e68d695483745cde8b541e3bf630749894e342a022100c1f7ab20e13e22fb95281a870f3dcf38d782e53023ee313d741ad0cfbc0c509001 400000 OP_NOP2
 
 now shows as:
 
-    304502207fa7a6d1e0ee81132a269ad84e68d695483745cde8b541e3bf630749894e342a022100c1f7ab20e13e22fb95281a870f3dcf38d782e53023ee313d741ad0cfbc0c5090[ALL]
+    304502207fa7a6d1e0ee81132a269ad84e68d695483745cde8b541e3bf630749894e342a022100c1f7ab20e13e22fb95281a870f3dcf38d782e53023ee313d741ad0cfbc0c5090[ALL] 400000 OP_CHECKLOCKTIMEVERIFY
 
 Note that the output of the RPC `decodescript` did not change because it is
 configured specifically to process scriptPubKey and not scriptSig scripts.
@@ -376,6 +386,15 @@ caching. A sample config for apache2 could look like:
     # ProxyPass / balancer://balancer_cluster_name
 
     </VirtualHost>
+
+Mining Code Changes
+-------------------
+
+The mining code in 0.12 has been optimized to be significantly faster and use less
+memory. As part of these changes, consensus critical calculations are cached on a
+transaction's acceptance into the mempool and the mining code now relies on the
+consistency of the mempool to assemble blocks. However all blocks are still tested
+for validity after assembly.
 
 0.12.0 Change log
 =================
@@ -450,6 +469,8 @@ git merge commit are mentioned.
 - #6896 `d482c0a` Make -checkmempool=1 not fail through int32 overflow
 - #6993 `b632145` Add -blocksonly option
 - #7323 `a344880` 0.12: Backport -bytespersigop option
+- #7386 `da83ecd` Add option `-permitrbf` to set transaction replacement policy
+- #7290 `b16b5bc` Add missing options help
 
 ### Block and transaction handling
 
@@ -489,6 +510,7 @@ git merge commit are mentioned.
 - #7062 `12c469b` [Mempool] Fix mempool limiting and replace-by-fee for PrioritiseTransaction
 - #7276 `76de36f` Report non-mandatory script failures correctly
 - #7217 `e08b7cb` Mark blocks with too many sigops as failed
+- #7387 `f4b2ce8` Get rid of inaccurate ScriptSigArgsExpected
 
 ### P2P protocol and network code
 
@@ -577,6 +599,7 @@ git merge commit are mentioned.
 - #7296 `a36d79b` Add sane fallback for fee estimation
 - #7293 `ff9b610` Add regression test for vValue sort order 
 - #7306 `4707797` Make sure conflicted wallet tx's update balances
+- #7381 `621bbd8` [walletdb] Fix syntax error in key parser
 
 ### GUI
 
@@ -605,6 +628,8 @@ git merge commit are mentioned.
 - #7282 `5cadf3e` fix coincontrol update issue when deleting a send coins entry
 - #7319 `1320300` Intro: Display required space
 - #7318 `9265e89` quickfix for RPC timer interface problem
+- #7327 `b16b5bc` [Wallet] Transaction View: LastMonth calculation fixed
+- #7364 `7726c48` [qt] Windows: Make rpcconsole monospace font larger
 
 ### Tests and QA
 
