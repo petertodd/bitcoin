@@ -707,10 +707,11 @@ bool CheckFinalTx(const CTransaction &tx, int flags)
 }
 
 /**
- * Calculates the block height and time which the transaction must be later than
- * in order to be considered final in the context of BIP 68.  It also removes
- * from the vector of input heights any entries which did not correspond to sequence
- * locked inputs as they do not affect the calculation.
+ * Calculate the block height and previous block's median-time-past which the
+ * transaction must be later than in order to be considered final in the
+ * context of BIP 68. Also remove from the vector of input heights any entries
+ * which did not correspond to sequence locked inputs as they do not affect the
+ * calculation.
  */
 static std::pair<int, int64_t> CalculateSequenceLocks(const CTransaction &tx, int flags, std::vector<int>* prevHeights, const CBlockIndex& block)
 {
@@ -751,18 +752,17 @@ static std::pair<int, int64_t> CalculateSequenceLocks(const CTransaction &tx, in
         int nCoinHeight = (*prevHeights)[txinIndex];
 
         if (txin.nSequence & CTxIn::SEQUENCE_LOCKTIME_TYPE_FLAG) {
+            // Consider the case where the duration is 0 seconds. Both the
+            // coin creating and spending block is the same. Since we're
+            // returning the minimum time that the spending block's parent's
+            // median-time-past must be *greater* than, we subtract one, making
+            // the spending transaction valid in the same block.
             int64_t nCoinTime = block.GetAncestor(std::max(nCoinHeight-1, 0))->GetMedianTimePast();
-
-            // Time-based relative lock-times are measured from the
-            // smallest allowed timestamp of the block containing the
-            // txout being spent, which is the median time past of the
-            // block prior.
             nMinTime = std::max(nMinTime, nCoinTime + (int64_t)((txin.nSequence & CTxIn::SEQUENCE_LOCKTIME_MASK) << CTxIn::SEQUENCE_LOCKTIME_GRANULARITY) - 1);
         } else {
-            // We subtract 1 from relative lock-times because a lock-
-            // time of 0 has the semantics of "same block," so a lock-
-            // time of 1 should mean "next block," but nLockTime has
-            // the semantics of "last invalid block height."
+            // Again, consider the case where the duration is 0 blocks. The
+            // coin can be spent when the coin height is the same as the
+            // spending height, so we return the coin height minus one.
             nMinHeight = std::max(nMinHeight, nCoinHeight + (int)(txin.nSequence & CTxIn::SEQUENCE_LOCKTIME_MASK) - 1);
         }
     }
@@ -772,8 +772,8 @@ static std::pair<int, int64_t> CalculateSequenceLocks(const CTransaction &tx, in
 
 static bool EvaluateSequenceLocks(const CBlockIndex& block, std::pair<int, int64_t> lockPair)
 {
-    int64_t nBlockTime = block.pprev ? block.pprev->GetMedianTimePast() : 0;
-    if (lockPair.first >= block.nHeight || lockPair.second >= nBlockTime)
+    int64_t nBlockMinTime = block.pprev ? block.pprev->GetMedianTimePast(): 0;
+    if (lockPair.first >= block.nHeight || lockPair.second >= nBlockMinTime)
         return false;
 
     return true;
