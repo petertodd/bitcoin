@@ -807,7 +807,7 @@ bool CheckSequenceLocks(const CTransaction &tx, int flags)
         const CTxIn& txin = tx.vin[txinIndex];
         CCoins coins;
         if (!viewMemPool.GetCoins(txin.prevout.hash, coins)) {
-            return  error("%s: Missing input", __func__);
+            return error("%s: Missing input", __func__);
         }
         if (coins.nHeight == MEMPOOL_HEIGHT) {
             // Assume all mempool transaction confirm in the next block
