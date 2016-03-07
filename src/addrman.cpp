@@ -46,6 +46,9 @@ bool CAddrInfo::IsTerrible(int64_t nNow) const
     if (nNow - nLastSuccess > ADDRMAN_MIN_FAIL_DAYS * 24 * 60 * 60 && nAttempts >= ADDRMAN_MAX_FAILURES) // N successive failures in the last week
         return true;
 
+    if ((nServices & (NODE_NETWORK | NODE_REPLACE_BY_FEE)) != (NODE_NETWORK | NODE_REPLACE_BY_FEE))
+        return false;
+
     return false;
 }
 

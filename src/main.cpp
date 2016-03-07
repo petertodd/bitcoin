@@ -4294,7 +4294,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         if (pfrom->fInbound)
             pfrom->PushVersion();
 
-        pfrom->fClient = !(pfrom->nServices & NODE_NETWORK);
+        // By considering things that don't advertise replacement as "clients"
+        // we're making sure we connect to full-RBF supporting nodes for all
+        // our outgoing connections, thus tying all full-RBF nodes together.
+        pfrom->fClient = !((pfrom->nServices & (NODE_NETWORK | NODE_REPLACE_BY_FEE)) == (NODE_NETWORK | NODE_REPLACE_BY_FEE));
 
         // Potentially mark this peer as a preferred download peer.
         UpdatePreferredDownload(pfrom, State(pfrom->GetId()));
