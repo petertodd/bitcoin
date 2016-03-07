@@ -4299,6 +4299,14 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         // our outgoing connections, thus tying all full-RBF nodes together.
         pfrom->fClient = !((pfrom->nServices & (NODE_NETWORK | NODE_REPLACE_BY_FEE)) == (NODE_NETWORK | NODE_REPLACE_BY_FEE));
 
+        if (!pfrom->fInbound && pfrom->fClient)
+        {
+            LogPrint("net", "outbound peer %s doesn't support NODE_NETWORK & NODE_REPLACE_BY_FEE, disconnecting\n", pfrom->addr.ToString());
+            pfrom->fDisconnect = true;
+            return true;
+        }
+
+
         // Potentially mark this peer as a preferred download peer.
         UpdatePreferredDownload(pfrom, State(pfrom->GetId()));
 
