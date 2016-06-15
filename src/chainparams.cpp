@@ -112,7 +112,7 @@ public:
         assert(genesis.hashMerkleRoot == uint256S("0x4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"));
 
         // RBF-specific seed
-        vSeeds.push_back(CDNSSeedData("btc.petertodd.org", "rbf-seed.btc.petertodd.org"));
+        vSeeds.push_back(CDNSSeedData("petertodd.org", "x4000001.seed.btc.petertodd.org"));
 
         vSeeds.push_back(CDNSSeedData("bitcoin.sipa.be", "seed.bitcoin.sipa.be")); // Pieter Wuille
         vSeeds.push_back(CDNSSeedData("bluematt.me", "dnsseed.bluematt.me")); // Matt Corallo
@@ -206,9 +206,8 @@ public:
         vSeeds.clear();
 
         // RBF-specific seed
-        vSeeds.push_back(CDNSSeedData("tbtc.petertodd.org", "rbf-seed.tbtc.petertodd.org"));
+        vSeeds.push_back(CDNSSeedData("petertodd.org", "x4000001.seed.tbtc.petertodd.org"));
 
-        vSeeds.push_back(CDNSSeedData("bitcoin.petertodd.org", "testnet-seed.bitcoin.petertodd.org"));
         vSeeds.push_back(CDNSSeedData("bluematt.me", "testnet-seed.bluematt.me"));
         vSeeds.push_back(CDNSSeedData("bitcoin.schildbach.de", "testnet-seed.bitcoin.schildbach.de"));
 
