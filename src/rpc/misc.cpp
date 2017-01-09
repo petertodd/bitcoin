@@ -57,7 +57,7 @@ UniValue getinfo(const UniValue& params, bool fHelp)
             "  \"proxy\": \"host:port\",     (string, optional) the proxy used by the server\n"
             "  \"difficulty\": xxxxxx,       (numeric) the current difficulty\n"
             "  \"testnet\": true|false,      (boolean) if the server is using testnet or not\n"
-            "  \"keypoololdest\": xxxxxx,    (numeric) the timestamp (seconds since GMT epoch) of the oldest pre-generated key in the key pool\n"
+            "  \"keypoololdest\": xxxxxx,    (numeric) the timestamp (seconds since Unix epoch) of the oldest pre-generated key in the key pool\n"
             "  \"keypoolsize\": xxxx,        (numeric) how many new keys are pre-generated\n"
             "  \"unlocked_until\": ttt,      (numeric) the timestamp in seconds since epoch (midnight Jan 1 1970 GMT) that the wallet is unlocked for transfers, or 0 if the wallet is locked\n"
             "  \"paytxfee\": x.xxxx,         (numeric) the transaction fee set in " + CURRENCY_UNIT + "/kB\n"
@@ -320,43 +320,6 @@ UniValue createmultisig(const UniValue& params, bool fHelp)
     return result;
 }
 
-UniValue createwitnessaddress(const UniValue& params, bool fHelp)
-{
-    if (fHelp || params.size() < 1 || params.size() > 1)
-    {
-        string msg = "createwitnessaddress \"script\"\n"
-            "\nCreates a witness address for a particular script.\n"
-            "It returns a json object with the address and witness script.\n"
-
-            "\nArguments:\n"
-            "1. \"script\"       (string, required) A hex encoded script\n"
-
-            "\nResult:\n"
-            "{\n"
-            "  \"address\":\"multisigaddress\",  (string) The value of the new address (P2SH of witness script).\n"
-            "  \"witnessScript\":\"script\"      (string) The string value of the hex-encoded witness script.\n"
-            "}\n"
-        ;
-        throw runtime_error(msg);
-    }
-
-    if (!IsHex(params[0].get_str())) {
-        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Script must be hex-encoded");
-    }
-
-    std::vector<unsigned char> code = ParseHex(params[0].get_str());
-    CScript script(code.begin(), code.end());
-    CScript witscript = GetScriptForWitness(script);
-    CScriptID witscriptid(witscript);
-    CBitcoinAddress address(witscriptid);
-
-    UniValue result(UniValue::VOBJ);
-    result.push_back(Pair("address", address.ToString()));
-    result.push_back(Pair("witnessScript", HexStr(witscript.begin(), witscript.end())));
-
-    return result;
-}
-
 UniValue verifymessage(const UniValue& params, bool fHelp)
 {
     if (fHelp || params.size() != 3)
@@ -490,7 +453,6 @@ static const CRPCCommand commands[] =
     { "control",            "getinfo",                &getinfo,                true  }, /* uses wallet if enabled */
     { "util",               "validateaddress",        &validateaddress,        true  }, /* uses wallet if enabled */
     { "util",               "createmultisig",         &createmultisig,         true  },
-    { "util",               "createwitnessaddress",   &createwitnessaddress,   true  },
     { "util",               "verifymessage",          &verifymessage,          true  },
     { "util",               "signmessagewithprivkey", &signmessagewithprivkey, true  },
 

@@ -94,12 +94,12 @@ if not (ENABLE_WALLET == 1 and ENABLE_UTILS == 1 and ENABLE_BITCOIND == 1):
 if ENABLE_ZMQ:
     try:
         import zmq
-    except ImportError as e:
-        print("WARNING: \"import zmq\" failed. Set ENABLE_ZMQ=0 or " \
-            "to run zmq tests, see dependency info in /qa/README.md.")
-        ENABLE_ZMQ=0
+    except ImportError:
+        print("ERROR: \"import zmq\" failed. Set ENABLE_ZMQ=0 or "
+              "to run zmq tests, see dependency info in /qa/README.md.")
+        # ENABLE_ZMQ=0
+        raise
 
-#Tests
 testScripts = [
     # longest test should go first, to favor running tests in parallel
     'p2p-fullblocktest.py',
@@ -107,6 +107,7 @@ testScripts = [
     'bip68-112-113-p2p.py',
     'wallet.py',
     'wallet-hd.py',
+    'wallet-dump.py',
     'listtransactions.py',
     'receivedby.py',
     'mempool_resurrect_test.py',
@@ -141,6 +142,8 @@ testScripts = [
     'segwit.py',
     'importprunedfunds.py',
     'signmessages.py',
+    'p2p-compactblocks.py',
+    'nulldummy.py',
 ]
 if ENABLE_ZMQ:
     testScripts.append('zmq_test.py')
@@ -158,7 +161,7 @@ testScriptsExt = [
     'txn_clone.py --mineblock',
     'forknotify.py',
     'invalidateblock.py',
-#    'rpcbind_test.py', #temporary, bug in libevent, see #6655
+    'rpcbind_test.py',
     'smartfees.py',
     'maxblocksinflight.py',
     'p2p-acceptblock.py',
@@ -240,6 +243,10 @@ class RPCTestHandler:
         self.test_list = test_list
         self.flags = flags
         self.num_running = 0
+        # In case there is a graveyard of zombie bitcoinds, we can apply a
+        # pseudorandom offset to hopefully jump over them.
+        # (625 is PORT_RANGE/MAX_NODES)
+        self.portseed_offset = int(time.time() * 1000) % 625
         self.jobs = []
 
     def get_next(self):
@@ -247,22 +254,28 @@ class RPCTestHandler:
             # Add tests
             self.num_running += 1
             t = self.test_list.pop(0)
-            port_seed = ["--portseed=%s" % len(self.test_list)]
+            port_seed = ["--portseed={}".format(len(self.test_list) + self.portseed_offset)]
+            log_stdout = tempfile.SpooledTemporaryFile(max_size=2**16)
+            log_stderr = tempfile.SpooledTemporaryFile(max_size=2**16)
             self.jobs.append((t,
                               time.time(),
                               subprocess.Popen((RPC_TESTS_DIR + t).split() + self.flags + port_seed,
                                                universal_newlines=True,
-                                               stdout=subprocess.PIPE,
-                                               stderr=subprocess.PIPE)))
+                                               stdout=log_stdout,
+                                               stderr=log_stderr),
+                              log_stdout,
+                              log_stderr))
         if not self.jobs:
             raise IndexError('pop from empty list')
         while True:
             # Return first proc that finishes
             time.sleep(.5)
             for j in self.jobs:
-                (name, time0, proc) = j
+                (name, time0, proc, log_out, log_err) = j
                 if proc.poll() is not None:
-                    (stdout, stderr) = proc.communicate(timeout=3)
+                    log_out.seek(0), log_err.seek(0)
+                    [stdout, stderr] = [l.read().decode('utf-8') for l in (log_out, log_err)]
+                    log_out.close(), log_err.close()
                     passed = stderr == "" and proc.returncode == 0
                     self.num_running -= 1
                     self.jobs.remove(j)

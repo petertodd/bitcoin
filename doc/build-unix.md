@@ -82,6 +82,7 @@ install necessary parts of boost:
 BerkeleyDB is required for the wallet. db4.8 packages are available [here](https://launchpad.net/~bitcoin/+archive/bitcoin).
 You can add the repository and install using the following commands:
 
+    sudo apt-get install software-properties-common
     sudo add-apt-repository ppa:bitcoin/bitcoin
     sudo apt-get update
     sudo apt-get install libdb4.8-dev libdb4.8++-dev
@@ -293,9 +294,10 @@ These steps can be performed on, for example, an Ubuntu VM. The depends system
 will also work on other Linux distributions, however the commands for
 installing the toolchain will be different.
 
-First install the toolchain:
+Make sure you install the build requirements mentioned above.
+Then, install the toolchain and curl:
 
-    sudo apt-get install g++-arm-linux-gnueabihf
+    sudo apt-get install g++-arm-linux-gnueabihf curl
 
 To build executables for ARM:
 
