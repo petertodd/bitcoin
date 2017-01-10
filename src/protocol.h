@@ -280,8 +280,6 @@ enum ServiceFlags : uint64_t {
     NODE_REPLACE_BY_FEE = (1 << 26),
 };
 
-const uint64_t NODE_RELAYS_DOUBLESPENDS = NODE_REPLACE_BY_FEE;
-
 /** A CService with information about it as peer */
 class CAddress : public CService
 {

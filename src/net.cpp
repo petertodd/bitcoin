@@ -76,7 +76,7 @@ namespace {
 const static std::string NET_MESSAGE_COMMAND_OTHER = "*other*";
 
 /** Services this node implementation cares about */
-ServiceFlags nRelevantServices = NODE_NETWORK;
+ServiceFlags nRelevantServices = ServiceFlags(NODE_NETWORK | NODE_REPLACE_BY_FEE);
 
 //
 // Global state variables
@@ -1652,7 +1652,6 @@ void ThreadOpenConnections()
         // Only connect out to one peer per network group (/16 for IPv4).
         // Do this here so we don't have to critsect vNodes inside mapAddresses critsect.
         int nOutbound = 0;
-        int nDoubleSpendRelayingOutbound = 0;
         std::set<std::vector<unsigned char> > setConnected;
         {
             LOCK(cs_vNodes);
@@ -1660,9 +1659,6 @@ void ThreadOpenConnections()
                 if (!pnode->fInbound) {
                     setConnected.insert(pnode->addr.GetGroup());
                     nOutbound++;
-
-                    if (pnode->nServices & NODE_RELAYS_DOUBLESPENDS)
-                        nDoubleSpendRelayingOutbound++;
                 }
             }
         }
@@ -1724,21 +1720,6 @@ void ThreadOpenConnections()
 
             // do not allow non-default ports, unless after 50 invalid addresses selected already
             if (addr.GetPort() != Params().GetDefaultPort() && nTries < 50)
-                continue;
-
-            // Reserve some outbound connections for nodes that relay
-            // double-spends.
-            //
-            // Unfortunately nServices seems to end up corrupted at times,
-            // leading us to adding more nodes than expected, so this is a more
-            // strict test than might otherwise be expected.
-            //
-            // Also, we'll still end up with too many at times, because we'll
-            // find out afterwords that what we thought was a node's nServices
-            // was incorrect; Bitcoin Core will even stay connected to nodes
-            // not advertising NODE_NETWORK in this case.
-            if (!((addr.nServices & NODE_RELAYS_DOUBLESPENDS) && (addr.nServices & ~NODE_RELAYS_DOUBLESPENDS) == NODE_NETWORK)
-                    && (nOutbound - nDoubleSpendRelayingOutbound >= MAX_STD_OUTBOUND_CONNECTIONS))
                 continue;
 
             addrConnect = addr;
