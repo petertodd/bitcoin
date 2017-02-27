@@ -8,7 +8,7 @@ VALID=false
 REVSIG=false
 IFS='
 '
-for LINE in $(echo "$INPUT" | gpg --trust-model always "$@" 2>/dev/null); do
+for LINE in $(echo "$INPUT" | gpg --trust-model always --weak-digest sha1 "$@" 2>/dev/null); do
 	case "$LINE" in
 	"[GNUPG:] VALIDSIG "*)
 		while read KEY; do
