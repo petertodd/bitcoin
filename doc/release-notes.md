@@ -33,6 +33,28 @@ frequently tested on them.
 Notable changes
 ===============
 
+Performance Improvements
+--------------
+
+Validation speed and network propagation performance have been greatly
+improved, leading to much shorter sync and initial block download times.
+
+- The script signature cache has been reimplemented as a "cuckoo cache",
+  allowing for more signatures to be cached and faster lookups.
+- Assumed-valid blocks have been introduced which allows script validation to
+  be skipped for ancestors of known-good blocks, without changing the security
+  model. See below for more details.
+- In some cases, compact blocks are now relayed before being fully validated as
+  per BIP152.
+- P2P networking has been refactored with a focus on concurrency and
+  throughput. Network operations are no longer bottlenecked by validation. As a
+  result, block fetching is several times faster than previous releases in many
+  cases.
+- The UTXO cache now claims unused mempool memory. This speeds up initial block
+  download as UTXO lookups are a major bottleneck there, and there is no use for
+  the mempool at that stage.
+
+
 Manual Pruning
 --------------
 
@@ -146,7 +168,8 @@ Opt into RBF When Sending
 
 A new startup option, `-walletrbf`, has been added to allow users to have all
 transactions sent opt into RBF support. The default value for this option is
-currently `false`, so transactions will not opt into RBF by default.
+currently `false`, so transactions will not opt into RBF by default. The new
+`bumpfee` RPC can be used to replace transactions that opt into RBF.
 
 Sensitive Data Is No Longer Stored In Debug Console History
 -----------------------------------------------------------
@@ -170,7 +193,7 @@ Final Alert
 -----------
 
 The Alert System was [disabled and deprecated](https://bitcoin.org/en/alert/2016-11-01-alert-retirement) in Bitcoin Core 0.12.1 and removed in 0.13.0. 
-To Alert System was retired with a maximum sequence final alert which causes any nodes
+The Alert System was retired with a maximum sequence final alert which causes any nodes
 supporting the Alert System to display a static hard-coded "Alert Key Compromised" message which also
 prevents any other alerts from overriding it. This final alert is hard-coded into this release
 so that all old nodes receive the final alert.
@@ -204,7 +227,7 @@ Low-level RPC changes
  - The first boolean argument to `getaddednodeinfo` has been removed. This is 
    an incompatible change.
 
- - RPC command "getmininginfo" loses the "testnet" field in favor of the more
+ - RPC command `getmininginfo` loses the "testnet" field in favor of the more
    generic "chain" (which has been present for years).
 
  - A new RPC command `preciousblock` has been added which marks a block as
@@ -224,6 +247,11 @@ Low-level RPC changes
    about the memory usage of Bitcoin Core. This was added in conjunction with
    optimizations to memory management. See [Pull #8753](https://github.com/bitcoin/bitcoin/pull/8753)
    for more information.
+
+ - A new RPC command `bumpfee` has been added which allows replacing an
+   unconfirmed wallet transaction that signaled RBF (see the `-walletrbf`
+   startup option above) with a new transaction that pays a higher fee, and
+   should be more likely to get confirmed quickly.
 
 HTTP REST Changes
 -----------------
@@ -259,7 +287,7 @@ Removal of Priority Estimation
 ------------------------------
 
 - Estimation of "priority" needed for a transaction to be included within a target
-  number of blocks has been removed.  The rpc calls are deprecated and will either
+  number of blocks has been removed.  The RPC calls are deprecated and will either
   return -1 or 1e24 appropriately. The format for `fee_estimates.dat` has also
   changed to no longer save these priority estimates. It will automatically be
   converted to the new format which is not readable by prior versions of the
@@ -320,6 +348,16 @@ Fundrawtransaction change address reuse
 - Users should also consider using `getrawchangeaddress()` in conjunction
   with `fundrawtransaction`'s `changeAddress` option.
 
+Unused mempool memory used by coincache
+----------------------------------------
+
+- Before 0.14, memory reserved for mempool (using the `-maxmempool` option)
+  went unused during initial block download, or IBD. In 0.14, the UTXO DB cache
+  (controlled with the `-dbcache` option) borrows memory from the mempool
+  when there is extra memory available. This may result in an increase in
+  memory usage during IBD for those previously relying on only the `-dbcache`
+  option to limit memory during that time.
+
 0.14.0 Change log
 =================
 
@@ -337,7 +375,6 @@ and git merge commit are mentioned.
 - #8788 `97c7f73` Give RPC commands more information about the RPC request (jonasschnelli)
 - #7948 `5d2c8e5` Augment getblockchaininfo bip9\_softforks data (mruddy)
 - #8980 `0e22855` importmulti: Avoid using boost::variant::operator!=, which is only in newer boost versions (luke-jr)
-- #9087 `924de0b` Give more details when "generate" fails (jtimon)
 - #9025 `4d8558a` Getrawtransaction should take a bool for verbose (jnewbery)
 - #8811 `5754e03` Add support for JSON-RPC named arguments (laanwj)
 - #9520 `2456a83` Deprecate non-txindex getrawtransaction and better warning (sipa)
@@ -354,6 +391,8 @@ and git merge commit are mentioned.
 - #9778 `ad168ef` Add two hour buffer to manual pruning (morcos)
 - #9761 `9828f9a` Use 2 hour grace period for key timestamps in importmulti rescans (ryanofsky)
 - #9474 `48d7e0d` Mark the minconf parameter to move as ignored (sipa)
+- #9619 `861cb0c` Bugfix: RPC/Mining: GBT should return 1 MB sizelimit before segwit activates (luke-jr)
+- #9773 `9072395` Return errors from importmulti if complete rescans are not successful (ryanofsky)
 
 ### Block and transaction handling
 - #8391 `37d83bb` Consensus: Remove ISM (NicolasDorier)
@@ -395,7 +434,8 @@ and git merge commit are mentioned.
 - #9349 `2db4cbc` Make CScript (and prevector) c++11 movable (sipa)
 - #9252 `ce5c1f4` Release cs\_main before calling ProcessNewBlock, or processing headers (cmpctblock handling) (sdaftuar)
 - #9283 `869781c` A few more CTransactionRef optimizations (sipa)
-- #9499 `9c9af5a` Use recent-rejects, orphans, and recently-replaced txn for compact-block-reconstruction
+- #9499 `9c9af5a` Use recent-rejects, orphans, and recently-replaced txn for compact-block-reconstruction (TheBlueMatt)
+- #9813 `3972a8e` Read/write mempool.dat as a binary (paveljanik)
 
 ### P2P protocol and network code
 - #8128 `1030fa7` Turn net structures into dumb storage classes (theuni)
@@ -457,6 +497,7 @@ and git merge commit are mentioned.
 - #9765 `1e92e04` Harden against mistakes handling invalid blocks (sdaftuar)
 - #9779 `3c02b95` Update nMinimumChainWork and defaultAssumeValid (gmaxwell)
 - #8524 `19b0f33` Precompute sighashes (sipa)
+- #9791 `1825a03` Avoid VLA in hash.h (sipa)
 
 ### Build system
 - #8238 `6caf3ee` ZeroMQ 4.1.5 && ZMQ on Windows (fanquake)
@@ -494,6 +535,8 @@ and git merge commit are mentioned.
 - #8249 `4e1567a` Enable (and check for) 64-bit ASLR on Windows (laanwj)
 - #9758 `476cc47` Selectively suppress deprecation warnings (jonasschnelli)
 - #9783 `6d61a2b` release: bump gitian descriptors for a new 0.14 package cache (theuni)
+- #9789 `749fe95` build: add --enable-werror and warn on vla's (theuni)
+- #9831 `99fd85c` build: force a c++ standard to be specified (theuni)
 
 ### GUI
 - #8192 `c503863` Remove URLs from About dialog translations (fanquake)
@@ -536,9 +579,9 @@ and git merge commit are mentioned.
 - #9718 `36f9d3a` Qt/Intro: Various fixes (luke-jr)
 - #9735 `ec66d06` devtools: Handle Qt formatting characters edge-case in update-translations.py (laanwj)
 - #9755 `a441db0` Bugfix: Qt/Options: Restore persistent "restart required" notice (luke-jr)
+- #9817 `7d75a5a` Fix segfault crash when shutdown the GUI in disablewallet mode (jonasschnelli)
 
 ### Wallet
-- #8367 `045106b` Ensure <0.13 clients can't open HD wallets (jonasschnelli)
 - #8152 `b9c1cd8` Remove `CWalletDB*` parameter from CWallet::AddToWallet (pstratem)
 - #8432 `c7e05b3` Make CWallet::fFileBacked private (pstratem)
 - #8445 `f916700` Move CWallet::setKeyPool to private section of CWallet (pstratem)
@@ -549,7 +592,7 @@ and git merge commit are mentioned.
 - #8696 `a1f8d3e` Wallet: Remove last external reference to CWalletDB (pstratem)
 - #8768 `886e8c9` init: Get rid of fDisableWallet (MarcoFalke)
 - #8486 `ab0b411` Add high transaction fee warnings (MarcoFalke)
-- #8851 `940748b` Move key derivation logic from GenerateNewKey to DeriveNewChildKey (pstratem) (MarcoFalke)
+- #8851 `940748b` Move key derivation logic from GenerateNewKey to DeriveNewChildKey (pstratem)
 - #8287 `e10af96` Set fLimitFree = true (MarcoFalke)
 - #8928 `c587577` Fix init segfault where InitLoadWallet() calls ATMP before genesis (TheBlueMatt)
 - #7551 `f2d7056` Add importmulti RPC call (pedrobranco)
@@ -575,6 +618,7 @@ and git merge commit are mentioned.
 - #9771 `e43a585` Add missing cs\_wallet lock that triggers new lock held assertion (ryanofsky)
 - #9316 `3097ea4` Disable free transactions when relay is disabled (MarcoFalke)
 - #9615 `d2c9e4d` Wallet incremental fee (morcos)
+- #9760 `40c754c` Remove importmulti always-true check (ryanofsky)
 
 ### Tests and QA
 - #8270 `6e5e5ab` Tests: Use portable #! in python scripts (/usr/bin/env) (ChoHag)
@@ -627,8 +671,11 @@ and git merge commit are mentioned.
 - #9691 `fc67cd2` Init ECC context for `test_bitcoin_fuzzy` (gmaxwell)
 - #9712 `d304fef` bench: Fix initialization order in registration (laanwj)
 - #9707 `b860915` Fix RPC failure testing (jnewbery)
-- #8621 `e8ed6eb` contrib: python: Don't use shell=True (MarcoFalke)
 - #9269 `43e8150` Align struct COrphan definition (sipa)
+- #9820 `599c69a` Fix pruning test broken by 2 hour manual prune window (ryanofsky)
+- #9824 `260c71c` qa: Check return code when stopping nodes (MarcoFalke)
+- #9875 `50953c2` tests: Fix dangling pwalletMain pointer in wallet tests (laanwj)
+- #9839 `eddaa6b` [qa] Make import-rescan.py watchonly check reliable (ryanofsky)
 
 ### Documentation
 - #8332 `806b9e7` Clarify witness branches in transaction.h serialization (dcousens)
@@ -666,11 +713,14 @@ and git merge commit are mentioned.
 - #8915 `03dd707` Add copyright/patent issues to possible NACK reasons (petertodd)
 - #8965 `23e03f8` Mention that PPA doesn't support Debian (anduck)
 - #9115 `bfc7aad` Mention reporting security issues responsibly (paveljanik)
+- #9840 `08e0690` Update sendfrom RPC help to correct coin selection misconception (ryanofsky)
+- #9865 `289204f` Change bitcoin address in RPC help message (marijnfs)
 
 ### Miscellaneous
 - #8274 `7a2d402` util: Update tinyformat (laanwj)
 - #8291 `5cac8b1` util: CopyrightHolders: Check for untranslated substitution (MarcoFalke)
 - #8557 `44691f3` contrib: Rework verifybinaries (MarcoFalke)
+- #8621 `e8ed6eb` contrib: python: Don't use shell=True (MarcoFalke)
 - #8813 `fb24d7e` bitcoind: Daemonize using daemon(3) (laanwj)
 - #9004 `67728a3` Clarify `listenonion` (unsystemizer)
 - #8674 `bae81b8` tools for analyzing, updating and adding copyright headers in source files (isle2983)
@@ -713,6 +763,8 @@ and git merge commit are mentioned.
 - #9679 `a351162` Access WorkQueue::running only within the cs lock (TheBlueMatt)
 - #9777 `8dee822` Handle unusual maxsigcachesize gracefully (jnewbery)
 - #8863,#8807 univalue: Pull subtree (MarcoFalke)
+- #9798 `e22c067` Fix Issue #9775 (Check returned value of fopen) (kirit93)
+- #9856 `69832aa` Terminate immediately when allocation fails (theuni)
 
 Credits
 =======
@@ -755,7 +807,6 @@ Thanks to everyone who directly contributed to this release:
 - Gregory Maxwell
 - Gregory Sanders
 - Hampus Sjöberg
-- instagibbs
 - isle2983
 - Ivo van der Sangen
 - James White
@@ -772,6 +823,7 @@ Thanks to everyone who directly contributed to this release:
 - Justin Camarena
 - Karl-Johan Alm
 - Kaz Wesley
+- kirit93
 - Koki Takahashi
 - Lauda
 - leijurv
@@ -779,6 +831,7 @@ Thanks to everyone who directly contributed to this release:
 - Luke Dashjr
 - maiiz
 - MarcoFalke
+- Marijn Stollenga
 - Marty Jones
 - Masahiko Hyuga
 - Matt Corallo
@@ -791,7 +844,6 @@ Thanks to everyone who directly contributed to this release:
 - mrbandrews
 - mruddy
 - Nicolas DORIER
-- NicolasDorier
 - nomnombtc
 - Patrick Strateman
 - Pavel Janík
@@ -819,5 +871,6 @@ Thanks to everyone who directly contributed to this release:
 - Will Binns
 - Wladimir J. van der Laan
 - wodry
+- Zak Wilcox
 
 As well as everyone that helped translating on [Transifex](https://www.transifex.com/projects/p/bitcoin/).
