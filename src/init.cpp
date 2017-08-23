@@ -816,11 +816,11 @@ void InitLogging()
 
 namespace { // Variables internal to initialization process only
 
-ServiceFlags nRelevantServices = NODE_NETWORK;
+ServiceFlags nRelevantServices = ServiceFlags(NODE_NETWORK | NODE_REPLACE_BY_FEE);
 int nMaxConnections;
 int nUserMaxConnections;
 int nFD;
-ServiceFlags nLocalServices = NODE_NETWORK;
+ServiceFlags nLocalServices = ServiceFlags(NODE_NETWORK | NODE_REPLACE_BY_FEE);
 
 } // namespace
 
