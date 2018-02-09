@@ -275,6 +275,8 @@ enum ServiceFlags : uint64_t {
     // collisions and other cases where nodes may be advertising a service they
     // do not actually support. Other service bits should be allocated via the
     // BIP process.
+
+    NODE_REPLACE_BY_FEE = (1 << 26),
 };
 
 /**
@@ -302,7 +304,7 @@ enum ServiceFlags : uint64_t {
  * should be updated appropriately to filter for the same nodes.
  */
 static ServiceFlags GetDesirableServiceFlags(ServiceFlags services) {
-    return ServiceFlags(NODE_NETWORK | NODE_WITNESS);
+    return ServiceFlags(NODE_NETWORK | NODE_WITNESS | NODE_REPLACE_BY_FEE);
 }
 
 /**
