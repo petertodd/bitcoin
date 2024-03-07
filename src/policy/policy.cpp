@@ -91,7 +91,7 @@ bool IsStandard(const CScript& scriptPubKey, const std::optional<unsigned>& max_
     return true;
 }
 
-bool IsStandardTx(const CTransaction& tx, const std::optional<unsigned>& max_datacarrier_bytes, bool permit_bare_multisig, const CFeeRate& dust_relay_fee, std::string& reason)
+bool IsStandardTx(const CTransaction& tx, const std::optional<unsigned>& max_datacarrier_bytes, const std::optional<unsigned>& max_datacarrier_outputs, bool permit_bare_multisig, const CFeeRate& dust_relay_fee, std::string& reason)
 {
     if (tx.nVersion > TX_MAX_STANDARD_VERSION || tx.nVersion < 1) {
         reason = "version";
@@ -128,8 +128,8 @@ bool IsStandardTx(const CTransaction& tx, const std::optional<unsigned>& max_dat
         }
     }
 
-    unsigned int nDataOut = 0;
     TxoutType whichType;
+    unsigned int nDataOut = 0;
     for (const CTxOut& txout : tx.vout) {
         if (!::IsStandard(txout.scriptPubKey, max_datacarrier_bytes, whichType)) {
             reason = "scriptpubkey";
@@ -147,11 +147,10 @@ bool IsStandardTx(const CTransaction& tx, const std::optional<unsigned>& max_dat
         }
     }
 
-    // only one OP_RETURN txout is permitted
-    //if (nDataOut > 1) {
-    //    reason = "multi-op-return";
-    //    return false;
-    //}
+    if (nDataOut > max_datacarrier_outputs) {
+        reason = "multi-op-return";
+        return false;
+    }
 
     return true;
 }

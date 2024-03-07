@@ -70,6 +70,26 @@ static const bool DEFAULT_ACCEPT_DATACARRIER = true;
  * +2 for the pushdata opcodes.
  */
 static const unsigned int MAX_OP_RETURN_RELAY = 1000000;
+
+/* Default setting for `datacarriernum`.
+ *
+ * Implementation hardlimit: 3999833.
+ *
+ * Rational: minimal 1-input P2PKH spending transaction size + unbounded number
+ * of 1-byte OP_RETURN for the maximum datacarrier transaction respecting
+ * consensus-enforced `MAX_BLOCK_WEIGHT`.
+ */
+static const unsigned int MAX_DATACARRIER_OUTPUTS_HARDLIMIT = 3999833;
+
+/*
+ * Implementation softlimit: 1.
+ *
+ * Limit denial-of-service surface for block template constructors.
+ * A default of `datacarrier=1` is supported by Bitcoin Core since 
+ * its v0.10.0 (16-feb-2015) release.
+ */
+static const unsigned int MAX_DATACARRIER_OUTPUTS_SOFTLIMIT = 1;
+
 /**
  * An extra transaction can be added to a package, as long as it only has one
  * ancestor and is no larger than this. Not really any reason to make this
@@ -137,7 +157,7 @@ static constexpr decltype(CTransaction::nVersion) TX_MAX_STANDARD_VERSION{2};
 * Check for standard transaction types
 * @return True if all outputs (scriptPubKeys) use only standard transaction forms
 */
-bool IsStandardTx(const CTransaction& tx, const std::optional<unsigned>& max_datacarrier_bytes, bool permit_bare_multisig, const CFeeRate& dust_relay_fee, std::string& reason);
+bool IsStandardTx(const CTransaction& tx, const std::optional<unsigned>& max_datacarrier_bytes, const std::optional<unsigned>& max_datacarrier_outputs, bool permit_bare_multisig, const CFeeRate& dust_relay_fee, std::string& reason);
 /**
 * Check for standard transaction types
 * @param[in] mapInputs       Map of previous transactions that have outputs we're spending
