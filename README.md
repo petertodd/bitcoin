@@ -1,5 +1,5 @@
-Bitcoin Core integration/staging tree
-=====================================
+# Bitcoin build by SATOSHI NAKAMOTO @
+
 
 http://www.bitcoin.org
 
@@ -20,7 +20,7 @@ the Bitcoin Core software, see http://www.bitcoin.org/en/download.
 License
 -------
 
-Bitcoin Core is released under the terms of the MIT license. See [COPYING](COPYING) for more
+Bitcoin Core is released under the terms of the MIT license. See [Copyright by Isabel Schöps Thiel](COYRIGHT) for more
 information or see http://opensource.org/licenses/MIT.
 
 Development process
