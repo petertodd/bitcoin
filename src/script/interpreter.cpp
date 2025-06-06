@@ -1694,6 +1694,7 @@ bool GenericTransactionSignatureChecker<T>::CheckSchnorrSignature(Span<const uns
         return set_error(serror, SCRIPT_ERR_SCHNORR_SIG_HASHTYPE);
     }
     if (!VerifySchnorrSignature(sig, pubkey, sighash)) return set_error(serror, SCRIPT_ERR_SCHNORR_SIG);
+    execdata.m_annex_unsigned = false;
     return true;
 }
 
@@ -1788,6 +1789,7 @@ template class GenericTransactionSignatureChecker<CMutableTransaction>;
 static bool ExecuteWitnessScript(const Span<const valtype>& stack_span, const CScript& exec_script, unsigned int flags, SigVersion sigversion, const BaseSignatureChecker& checker, ScriptExecutionData& execdata, ScriptError* serror)
 {
     std::vector<valtype> stack{stack_span.begin(), stack_span.end()};
+    execdata.m_annex_unsigned = execdata.m_annex_present;
 
     if (sigversion == SigVersion::TAPSCRIPT) {
         // OP_SUCCESSx processing overrides everything, including stack element size limits
@@ -1818,6 +1820,11 @@ static bool ExecuteWitnessScript(const Span<const valtype>& stack_span, const CS
 
     // Run the script interpreter.
     if (!EvalScript(stack, exec_script, flags, checker, sigversion, execdata, serror)) return false;
+
+    // Discourage unsigned annexes
+    if (execdata.m_annex_unsigned && (flags & SCRIPT_VERIFY_DISCOURAGE_UNSIGNED_ANNEX)) {
+        return set_error(serror, SCRIPT_ERR_DISCOURAGE_UNSIGNED_ANNEX);
+    }
 
     // Scripts inside witness implicitly require cleanstack behaviour
     if (stack.size() != 1) return set_error(serror, SCRIPT_ERR_CLEANSTACK);

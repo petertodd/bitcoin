@@ -143,6 +143,10 @@ enum : uint32_t {
     // Making unknown public key versions (in BIP 342 scripts) non-standard
     SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE = (1U << 20),
 
+    // Making unsigned annexes non-standard
+    //
+    SCRIPT_VERIFY_DISCOURAGE_UNSIGNED_ANNEX = (1U << 21),
+
     // Constants to point to the highest flag in use. Add new flags above this line.
     //
     SCRIPT_VERIFY_END_MARKER
@@ -213,6 +217,8 @@ struct ScriptExecutionData
     bool m_annex_present;
     //! Hash of the annex data.
     uint256 m_annex_hash;
+    //! Whether an unsigned annex is present.
+    bool m_annex_unsigned = false;
 
     //! Whether m_validation_weight_left is initialized.
     bool m_validation_weight_left_init = false;
