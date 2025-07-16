@@ -1,0 +1,40 @@
+name: Docker CI
+on:
+  push:
+    tags:
+      - 'libre-relay-v29.0*'
+
+jobs:
+  build:
+    name: Build and push to GitHub Container Registry
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Set VERSION
+        run: echo "VERSION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
+
+      - uses: actions/checkout@v4
+
+      - name: Login to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Setup Docker buildx
+        run: docker buildx create --use
+
+      - name: Run Docker buildx
+        run: |
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION=${{ env.VERSION }} \
+            --tag ghcr.io/${{ github.repository }}:${{ env.VERSION }} \
+            --push .
+
+      - name: Rebuild for latest tag
+        run: |
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION=${{ env.VERSION }} \
+            --tag ghcr.io/${{ github.repository }}:latest \
+            --push .
