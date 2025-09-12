@@ -123,5 +123,6 @@ class P2PEvict(BitcoinTestFramework):
         assert evicted_peers[0] not in protected_peers
 
 
-if __name__ == '__main__':
-    P2PEvict(__file__).main()
+# disabling as Libre Relay's custom peering interfers with this test
+# if __name__ == '__main__':
+#    P2PEvict(__file__).main()
