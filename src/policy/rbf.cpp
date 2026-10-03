@@ -124,6 +124,29 @@ std::optional<std::string> PaysForRBF(CAmount original_fees,
     return std::nullopt;
 }
 
+std::optional<std::string> IncreasesFeeRate(CTxMemPool::ChangeSet& changeset,
+                                            const CTxMemPool::setEntries& all_conflicts,
+                                            const CTxMemPool& pool,
+                                            const Txid& txid)
+{
+    AssertLockHeld(pool.cs);
+    const auto format_feerate{[](const FeeFrac& f) {
+        return strprintf("%.3f sat/vB", f.size ? f.fee * double(WITNESS_SCALE_FACTOR) / f.size : 0.0);
+    }};
+    const FeePerWeight replacement_feerate{changeset.GetMinAddedChunkFeerate()};
+    for (const auto& it : all_conflicts) {
+        const FeePerWeight original_feerate{pool.GetMainChunkFeerate(*it)};
+        // replacement_feerate >= 1.25 * original_feerate, computed exactly.
+        if (FeeFrac{replacement_feerate.fee * 4, replacement_feerate.size} << FeeFrac{original_feerate.fee * 5, original_feerate.size}) {
+            return strprintf("rejecting fee-rate replacement %s; new chunk feerate %s < old chunk feerate %s * 1.25",
+                             txid.ToString(),
+                             format_feerate(replacement_feerate),
+                             format_feerate(original_feerate));
+        }
+    }
+    return std::nullopt;
+}
+
 std::optional<std::pair<DiagramCheckError, std::string>> ImprovesFeerateDiagram(CTxMemPool::ChangeSet& changeset)
 {
     // Require that the replacement strictly improves the mempool's feerate diagram.

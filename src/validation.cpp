@@ -1011,12 +1011,8 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
         m_subpackage.m_conflicting_size += it->GetTxSize();
     }
 
-    if (const auto err_string{PaysForRBF(m_subpackage.m_conflicting_fees, ws.m_modified_fees, ws.m_vsize,
-                                         m_pool.m_opts.incremental_relay_feerate, hash)}) {
-        // Result may change in a package context
-        return state.Invalid(TxValidationResult::TX_RECONSIDERABLE,
-                             strprintf("insufficient fee%s", ws.m_sibling_eviction ? " (including sibling eviction)" : ""), *err_string);
-    }
+    const auto pays_for_rbf_err{PaysForRBF(m_subpackage.m_conflicting_fees, ws.m_modified_fees, ws.m_vsize,
+                                           m_pool.m_opts.incremental_relay_feerate, hash)};
 
     // Add all the to-be-removed transactions to the changeset.
     for (auto it : all_conflicts) {
@@ -1026,6 +1022,18 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
     // Run cluster size limit checks and fail if we exceed them.
     if (!m_subpackage.m_changeset->CheckMemPoolPolicyLimits()) {
         return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "too-large-cluster", "");
+    }
+
+    if (pays_for_rbf_err) {
+        // Check if the chunk fee-rate is increased sufficiently to qualify for replace-by-fee-rate,
+        // in which case the feerate diagram check is skipped as the replacement is expected to
+        // pay less in absolute fees.
+        if (const auto err_string{IncreasesFeeRate(*m_subpackage.m_changeset, all_conflicts, m_pool, hash)}) {
+            // Result may change in a package context
+            return state.Invalid(TxValidationResult::TX_RECONSIDERABLE,
+                                 strprintf("insufficient fee%s", ws.m_sibling_eviction ? " (including sibling eviction)" : ""), *err_string);
+        }
+        return true;
     }
 
     if (const auto err_string{ImprovesFeerateDiagram(*m_subpackage.m_changeset)}) {

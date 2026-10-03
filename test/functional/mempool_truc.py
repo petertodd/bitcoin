@@ -516,7 +516,7 @@ class MempoolTRUC(BitcoinTestFramework):
         tx_v3_child_2_rule6 = self.wallet.create_self_transfer(
             utxo_to_spend=tx_v3_parent["new_utxos"][1], fee_rate=DEFAULT_FEE, version=3
         )
-        rule6_str = f"insufficient fee (including sibling eviction), rejecting replacement {tx_v3_child_2_rule6['txid']}"
+        rule6_str = f"insufficient fee (including sibling eviction), rejecting fee-rate replacement {tx_v3_child_2_rule6['txid']}"
         assert_raises_rpc_error(-26, rule6_str, node.sendrawtransaction, tx_v3_child_2_rule6["hex"])
         self.check_mempool([tx_v3_parent['txid'], tx_v3_child_1['txid']])
 
@@ -524,7 +524,7 @@ class MempoolTRUC(BitcoinTestFramework):
         tx_v3_child_2_rule4 = self.wallet.create_self_transfer(
             utxo_to_spend=tx_v3_parent["new_utxos"][1], fee_rate=2 * DEFAULT_FEE + Decimal("0.00000001"), version=3
         )
-        rule4_str = f"insufficient fee (including sibling eviction), rejecting replacement {tx_v3_child_2_rule4['txid']}, not enough additional fees to relay"
+        rule4_str = f"insufficient fee (including sibling eviction), rejecting fee-rate replacement {tx_v3_child_2_rule4['txid']}"
         assert_raises_rpc_error(-26, rule4_str, node.sendrawtransaction, tx_v3_child_2_rule4["hex"])
         self.check_mempool([tx_v3_parent['txid'], tx_v3_child_1['txid']])
 

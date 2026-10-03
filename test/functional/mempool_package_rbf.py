@@ -178,14 +178,16 @@ class PackageRBFTest(BitcoinTestFramework):
         package_hex4, package_txns4 = self.create_simple_package(coin, parent_fee=DEFAULT_FEE, child_fee=DEFAULT_CHILD_FEE)
         node.submitpackage(package_hex4)
         self.assert_mempool_contents(expected=package_txns4)
-        package_hex5, _package_txns5 = self.create_simple_package(coin, parent_fee=DEFAULT_CHILD_FEE, child_fee=DEFAULT_CHILD_FEE)
-        pkg_results5 = node.submitpackage(package_hex5)
-        assert 'package RBF failed: package feerate is less than or equal to parent feerate' in pkg_results5["package_msg"]
-        self.assert_mempool_contents(expected=package_txns4)
+        package_hex5, package_txns5 = self.create_simple_package(coin, parent_fee=DEFAULT_CHILD_FEE, child_fee=DEFAULT_CHILD_FEE)
+        node.submitpackage(package_hex5)
 
+        # RBFR replacement, as DEFAULT_CHILD_FEE is much higher than DEFAULT_FEE
+        self.assert_mempool_contents(expected=package_txns5)
+
+        # not enough extra fees for RBFR replacement
         package_hex5_1, package_txns5_1 = self.create_simple_package(coin, parent_fee=DEFAULT_CHILD_FEE, child_fee=DEFAULT_CHILD_FEE + Decimal("0.00000001"))
-        node.submitpackage(package_hex5_1)
-        self.assert_mempool_contents(expected=package_txns5_1)
+        pkg_results5_1 = node.submitpackage(package_hex5_1)
+        assert 'package RBF failed: insufficient anti-DoS fees, rejecting replacement' in pkg_results5_1["package_msg"]
         self.generate(node, 1)
 
     def test_package_rbf_max_conflicts(self):

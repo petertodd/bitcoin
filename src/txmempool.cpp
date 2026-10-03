@@ -1002,6 +1002,37 @@ util::Result<std::pair<std::vector<FeeFrac>, std::vector<FeeFrac>>> CTxMemPool::
     return m_pool->m_txgraph->GetMainStagingDiagrams();
 }
 
+FeePerWeight CTxMemPool::ChangeSet::GetMinAddedChunkFeerate()
+{
+    LOCK(m_pool->cs);
+    Assume(m_dependencies_processed);
+    Assume(!m_pool->m_txgraph->IsOversized(TxGraph::Level::TOP));
+
+    std::optional<FeePerWeight> ret;
+    std::set<const TxGraph::Ref*> seen;
+    for (const auto& entry : m_entry_vec) {
+        if (seen.contains(&*entry)) continue;
+        // The cluster is returned in linearization order, so chunk it, tracking which chunks
+        // contain added transactions.
+        std::vector<std::pair<FeeFrac, bool>> chunks;
+        for (const TxGraph::Ref* ref : m_pool->m_txgraph->GetCluster(*entry, TxGraph::Level::TOP)) {
+            const bool added{m_to_add.find(static_cast<const CTxMemPoolEntry*>(ref)->GetTx().GetHash()) != m_to_add.end()};
+            if (added) seen.insert(ref);
+            std::pair<FeeFrac, bool> chunk{m_pool->m_txgraph->GetIndividualFeerate(*ref), added};
+            while (!chunks.empty() && chunk.first >> chunks.back().first) {
+                chunk.first += chunks.back().first;
+                chunk.second |= chunks.back().second;
+                chunks.pop_back();
+            }
+            chunks.push_back(chunk);
+        }
+        for (const auto& [feerate, has_added] : chunks) {
+            if (has_added && (!ret || feerate << *ret)) ret = FeePerWeight::FromFeeFrac(feerate);
+        }
+    }
+    return ret.value_or(FeePerWeight{});
+}
+
 CTxMemPool::ChangeSet::TxHandle CTxMemPool::ChangeSet::StageAddition(const CTransactionRef& tx, const CAmount fee, int64_t time, unsigned int entry_height, uint64_t entry_sequence, bool spends_coinbase, int64_t sigops_cost, LockPoints lp)
 {
     LOCK(m_pool->cs);

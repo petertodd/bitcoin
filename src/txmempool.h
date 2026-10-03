@@ -671,6 +671,13 @@ public:
          */
         util::Result<std::pair<std::vector<FeeFrac>, std::vector<FeeFrac>>> CalculateChunksForRBF();
 
+        /**
+         * Calculate the lowest chunk feerate, in the mempool as it would be after applying this
+         * changeset, of any chunk containing a transaction added by this changeset. Used for
+         * replace-by-fee-rate. Cluster limits must have been checked already.
+         */
+        FeePerWeight GetMinAddedChunkFeerate();
+
         size_t GetTxCount() const { return m_entry_vec.size(); }
         const CTransaction& GetAddedTxn(size_t index) const { return m_entry_vec.at(index)->GetTx(); }
 

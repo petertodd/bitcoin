@@ -99,6 +99,20 @@ std::optional<std::string> PaysForRBF(CAmount original_fees,
                                       CFeeRate relay_fee,
                                       const Txid& txid);
 
+/** Replace-by-fee-rate: check that the chunk feerate of every transaction added by the changeset,
+ * as it would be in the mempool after the replacement, is at least 1.25x higher than the current
+ * chunk feerate of each of the transactions being replaced.
+ * @param[in]   changeset           The changeset containing proposed additions/removals; cluster
+ *                                  limits must already have been checked.
+ * @param[in]   all_conflicts       The set of mempool entries being replaced.
+ * @returns error message if the feerate increase is insufficient, otherwise std::nullopt.
+ */
+std::optional<std::string> IncreasesFeeRate(CTxMemPool::ChangeSet& changeset,
+                                            const CTxMemPool::setEntries& all_conflicts,
+                                            const CTxMemPool& pool,
+                                            const Txid& txid)
+    EXCLUSIVE_LOCKS_REQUIRED(pool.cs);
+
 /**
  * The replacement transaction must improve the feerate diagram of the mempool.
  * @param[in]   changeset           The changeset containing proposed additions/removals
